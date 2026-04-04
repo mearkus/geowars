@@ -1,0 +1,18 @@
+{
+  "name": "geowars",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:e2e": "playwright test",
+    "test:all": "vitest run && playwright test"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.0",
+    "jsdom": "^25.0.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "@playwright/test": "^1.47.0"
+  }
+}
