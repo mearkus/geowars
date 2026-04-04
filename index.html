@@ -6,7 +6,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#000008">
-  <title>Geometry Wars</title>
+  <title>Geo Wars</title>
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
@@ -1989,84 +1989,139 @@ class Game {
 
   _drawProfileSelect(ctx) {
     const { W, H } = this;
+    const isLandscape = W > H * 1.2;
 
-    // Title
-    this._neonText(ctx, 'GEOMETRY WARS', W / 2, H * 0.12, '#00ffff', 34);
-    this._neonText(ctx, 'SELECT PROFILE', W / 2, H * 0.12 + 48, '#8888ff', 18);
-    this._neonText(ctx, 'HOLD CARD TO RENAME', W / 2, H * 0.12 + 78, '#445566', 12);
+    if (isLandscape) {
+      // ── Landscape: compact header + 3 cards side by side ──
+      const titleSize = Math.min(24, H * 0.07);
+      this._neonText(ctx, 'GEO WARS', W / 2, H * 0.1, '#00ffff', titleSize);
+      this._neonText(ctx, 'SELECT PROFILE', W / 2, H * 0.1 + titleSize + 6, '#8888ff', Math.min(14, H * 0.04));
 
-    const cardW = Math.min(W * 0.88, 380);
-    const cardH = Math.max(80, H * 0.12);
-    const cardX = W / 2 - cardW / 2;
-    const totalCards = 3 * cardH + 2 * (cardH * 0.22);
-    const startY = Math.max(H * 0.28, (H - totalCards) / 2);
-    const gap = cardH + Math.round(cardH * 0.22);
+      const gap = Math.max(8, W * 0.012);
+      const cardW = Math.min((W - gap * 4) / 3, W * 0.29);
+      const cardH = H * 0.56;
+      const totalW = 3 * cardW + 2 * gap;
+      const startX = W / 2 - totalW / 2;
+      const cardsY = H * 0.3;
 
-    for (let i = 0; i < 3; i++) {
-      const cy = startY + i * gap;
-      const isActive = (i === this.profiles.active);
-      const color = isActive ? '#00ffff' : '#446688';
-      const prof = this.profiles.get(i);
+      for (let i = 0; i < 3; i++) {
+        const cx = startX + i * (cardW + gap);
+        const isActive = (i === this.profiles.active);
+        const color = isActive ? '#00ffff' : '#446688';
+        const prof = this.profiles.get(i);
 
-      this._neonRect(ctx, cardX, cy, cardW, cardH, color);
+        this._neonRect(ctx, cx, cardsY, cardW, cardH, color);
 
-      if (prof) {
-        // Profile name
-        this._neonText(ctx, prof.name, cardX + 18, cy + 26, color, 17, 'left');
-        // Stats
-        const statsStr = `HI: ${prof.highScore || 0}  |  LEVEL: ${(prof.highestLevel || 0) + 1}  |  KILLS: ${prof.totalKills || 0}`;
-        this._neonText(ctx, statsStr, cardX + 18, cy + 58, '#667799', 11, 'left');
-      } else {
-        this._neonText(ctx, `SLOT ${i + 1} — EMPTY`, cardX + 18, cy + 26, '#446688', 15, 'left');
-        this._neonText(ctx, 'TAP TO CREATE  |  HOLD TO RENAME', cardX + 18, cy + 58, '#334455', 11, 'left');
+        const nameY = cardsY + cardH * 0.32;
+        const statsY = cardsY + cardH * 0.62;
+        if (prof) {
+          this._neonText(ctx, prof.name, cx + cardW / 2, nameY, color, Math.min(15, cardW * 0.065));
+          const statsStr = `HI: ${prof.highScore || 0}\nLV: ${(prof.highestLevel || 0) + 1}`;
+          this._neonText(ctx, `HI ${prof.highScore || 0}`, cx + cardW / 2, statsY, '#667799', Math.min(11, cardW * 0.048));
+          this._neonText(ctx, `LV ${(prof.highestLevel || 0) + 1}  K ${prof.totalKills || 0}`, cx + cardW / 2, statsY + 16, '#667799', Math.min(10, cardW * 0.044));
+        } else {
+          this._neonText(ctx, `SLOT ${i + 1}`, cx + cardW / 2, nameY, '#446688', Math.min(14, cardW * 0.06));
+          this._neonText(ctx, 'EMPTY', cx + cardW / 2, statsY, '#334455', Math.min(11, cardW * 0.048));
+        }
+
+        const slotIdx = i;
+        this._addZone(cx, cardsY, cardW, cardH, () => {
+          this.profiles.active = slotIdx;
+          this.profiles.getOrCreate(slotIdx);
+          this.setState('menu');
+        });
+        this._addZone(cx, cardsY, cardW, cardH, () => {}, true, i);
       }
+    } else {
+      // ── Portrait: vertical stack ──
+      const titleSize = Math.min(34, H * 0.05);
+      const titleY = H * 0.1;
+      this._neonText(ctx, 'GEO WARS', W / 2, titleY, '#00ffff', titleSize);
+      this._neonText(ctx, 'SELECT PROFILE', W / 2, titleY + titleSize + 8, '#8888ff', 18);
+      this._neonText(ctx, 'HOLD CARD TO RENAME', W / 2, titleY + titleSize + 30, '#445566', 12);
 
-      // Regular click: select profile
-      const slotIdx = i;
-      this._addZone(cardX, cy, cardW, cardH, () => {
-        this.profiles.active = slotIdx;
-        this.profiles.getOrCreate(slotIdx);
-        this.setState('menu');
-      });
+      const cardW = Math.min(W * 0.88, 380);
+      const cardH = Math.max(72, H * 0.12);
+      const cardX = W / 2 - cardW / 2;
+      const totalCards = 3 * cardH + 2 * (cardH * 0.22);
+      const headerEnd = titleY + titleSize + 44;
+      const startY = Math.max(headerEnd + 10, Math.max(H * 0.26, (H - totalCards) / 2));
+      const gap = cardH + Math.round(cardH * 0.22);
 
-      // Long-press zone
-      this._addZone(cardX, cy, cardW, cardH, () => {}, true, i);
+      for (let i = 0; i < 3; i++) {
+        const cy = startY + i * gap;
+        const isActive = (i === this.profiles.active);
+        const color = isActive ? '#00ffff' : '#446688';
+        const prof = this.profiles.get(i);
+
+        this._neonRect(ctx, cardX, cy, cardW, cardH, color);
+
+        const nameOff = Math.round(cardH * 0.32);
+        const statsOff = Math.round(cardH * 0.72);
+        if (prof) {
+          this._neonText(ctx, prof.name, cardX + 18, cy + nameOff, color, 17, 'left');
+          const statsStr = `HI: ${prof.highScore || 0}  |  LEVEL: ${(prof.highestLevel || 0) + 1}  |  KILLS: ${prof.totalKills || 0}`;
+          this._neonText(ctx, statsStr, cardX + 18, cy + statsOff, '#667799', 11, 'left');
+        } else {
+          this._neonText(ctx, `SLOT ${i + 1} — EMPTY`, cardX + 18, cy + nameOff, '#446688', 15, 'left');
+          this._neonText(ctx, 'TAP TO CREATE  |  HOLD TO RENAME', cardX + 18, cy + statsOff, '#334455', 11, 'left');
+        }
+
+        const slotIdx = i;
+        this._addZone(cardX, cy, cardW, cardH, () => {
+          this.profiles.active = slotIdx;
+          this.profiles.getOrCreate(slotIdx);
+          this.setState('menu');
+        });
+        this._addZone(cardX, cy, cardW, cardH, () => {}, true, i);
+      }
     }
   }
 
   _drawPhaseSelect(ctx) {
     const { W, H } = this;
 
-    this._neonText(ctx, 'SELECT PHASE', W / 2, H * 0.1, '#00ffff', 26);
+    this._neonText(ctx, 'SELECT PHASE', W / 2, H * 0.1, '#00ffff', Math.min(26, H * 0.07));
     const activeProf = this.profiles.getActive();
     const profName = activeProf ? activeProf.name : 'PLAYER';
-    this._neonText(ctx, profName, W / 2, H * 0.1 + 36, '#8888ff', 14);
+    this._neonText(ctx, profName, W / 2, H * 0.1 + Math.min(30, H * 0.08), '#8888ff', Math.min(14, H * 0.04));
 
     const tileW = Math.min(W * 0.85, 360);
-    const tileH = Math.max(58, Math.min(H * 0.1, 75));
     const tileX = W / 2 - tileW / 2;
-    const startY = H * 0.24;
-    const gap = tileH + Math.max(10, H * 0.015);
+
+    // Dynamically fit 5 tiles + back button regardless of orientation
+    const backBtnH = Math.max(34, H * 0.09);
+    const backBtnMargin = Math.max(6, H * 0.02);
+    const headerH = H * 0.22;
+    const availH = H - headerH - backBtnH - backBtnMargin * 2;
+    const tileH = Math.min(72, Math.max(38, availH / 5 - 6));
+    const tileGap = Math.max(4, (availH - 5 * tileH) / 4);
+    const startY = headerH;
 
     for (let ph = 0; ph < 5; ph++) {
       const pd = PHASES_DATA[ph];
-      const cy = startY + ph * gap;
+      const cy = startY + ph * (tileH + tileGap);
       const unlockedPhases = activeProf ? activeProf.unlockedPhases : [true, false, false, false, false];
       const unlocked = unlockedPhases ? (unlockedPhases[ph] || ph === 0) : (ph === 0);
 
+      const nameOffY = Math.round(tileH * 0.42);
+      const subOffY = Math.round(tileH * 0.78);
+      const nameSize = Math.min(16, tileH * 0.32);
+      const subSize = Math.min(12, tileH * 0.24);
+
       if (unlocked) {
         this._neonRect(ctx, tileX, cy, tileW, tileH, pd.color);
-        this._neonText(ctx, pd.name, tileX + 14, cy + 22, pd.color, 16, 'left');
+        this._neonText(ctx, pd.name, tileX + 14, cy + nameOffY, pd.color, nameSize, 'left');
         const startLvl = pd.start + 1;
         const endLvl = pd.end + 1;
-        this._neonText(ctx, `LEVELS ${startLvl}–${endLvl}`, tileX + 14, cy + 50, pd.color + 'aa', 12, 'left');
-
+        if (tileH > 46) {
+          this._neonText(ctx, `LEVELS ${startLvl}–${endLvl}`, tileX + 14, cy + subOffY, pd.color + 'aa', subSize, 'left');
+        }
         const phIdx = ph;
         this._addZone(tileX, cy, tileW, tileH, () => {
           this.startGame(PHASES_DATA[phIdx].start);
         });
       } else {
-        // Locked
         ctx.save();
         ctx.strokeStyle = '#334455';
         ctx.fillStyle = '#222233';
@@ -2074,17 +2129,19 @@ class Game {
         ctx.strokeRect(tileX, cy, tileW, tileH);
         ctx.fillRect(tileX, cy, tileW, tileH);
         ctx.restore();
-
-        this._neonText(ctx, `${pd.name}  [LOCKED]`, tileX + 14, cy + 22, '#445566', 14, 'left');
-        const prevPhase = PHASES_DATA[ph - 1];
-        this._neonText(ctx, `Clear ${prevPhase ? prevPhase.name : ''} to unlock`, tileX + 14, cy + 50, '#334455', 11, 'left');
+        this._neonText(ctx, `${pd.name}  [LOCKED]`, tileX + 14, cy + nameOffY, '#445566', nameSize, 'left');
+        if (tileH > 46) {
+          const prevPhase = PHASES_DATA[ph - 1];
+          this._neonText(ctx, `Clear ${prevPhase ? prevPhase.name : ''} to unlock`, tileX + 14, cy + subOffY, '#334455', subSize, 'left');
+        }
       }
     }
 
-    // Back button
-    const btnW = 160;
-    const btnH = 44;
-    this._button(ctx, 'BACK', W / 2 - btnW / 2, H - 80, btnW, btnH, '#446688', () => {
+    // Back button — placed below last tile
+    const lastTileBottom = startY + 5 * tileH + 4 * tileGap;
+    const backY = lastTileBottom + backBtnMargin;
+    const btnW = Math.min(160, W * 0.4);
+    this._button(ctx, 'BACK', W / 2 - btnW / 2, backY, btnW, backBtnH, '#446688', () => {
       this.setState('menu');
     });
   }
@@ -2095,37 +2152,41 @@ class Game {
 
     ctx.save();
     ctx.globalAlpha = pulse;
-    this._neonText(ctx, 'GEOMETRY WARS', W / 2, H * 0.2, '#00ffff', 36);
+    this._neonText(ctx, 'GEO WARS', W / 2, H * 0.2, '#00ffff', Math.min(36, H * 0.06));
     ctx.restore();
 
-    this._neonText(ctx, 'MOBILE EDITION', W / 2, H * 0.3, '#6666cc', 16);
+    this._neonText(ctx, 'MOBILE EDITION', W / 2, H * 0.31, '#6666cc', Math.min(16, H * 0.036));
 
     const activeProf = this.profiles.getActive();
     if (activeProf) {
-      this._neonText(ctx, activeProf.name, W / 2, H * 0.42, '#00ffff', 15);
-      this._neonText(ctx, `HI: ${activeProf.highScore || 0}  |  KILLS: ${activeProf.totalKills || 0}`, W / 2, H * 0.47, '#667799', 12);
+      this._neonText(ctx, activeProf.name, W / 2, H * 0.42, '#00ffff', Math.min(15, H * 0.034));
+      this._neonText(ctx, `HI: ${activeProf.highScore || 0}  |  KILLS: ${activeProf.totalKills || 0}`, W / 2, H * 0.5, '#667799', 12);
     }
 
     const btnW = Math.min(W * 0.6, 280);
-    const btnH = 52;
+    // Dynamic button height + positions that can't overlap regardless of orientation
+    const btnH = Math.min(52, Math.max(36, H * 0.1));
+    const btnGap = Math.max(6, H * 0.018);
+    const totalBtnsH = 3 * btnH + 2 * btnGap;
+    const btnsStartY = Math.min(H * 0.58, H * 0.96 - totalBtnsH);
     const btnX = W / 2 - btnW / 2;
 
     // PLAY button: start from beginning of highest unlocked phase
     const highestPhase = activeProf ? this.profiles.firstUnlockedPhase(this.profiles.active) : 0;
-    this._button(ctx, 'PLAY', btnX, H * 0.58, btnW, btnH, '#00ffff', () => {
+    this._button(ctx, 'PLAY', btnX, btnsStartY, btnW, btnH, '#00ffff', () => {
       this.startGame(PHASES_DATA[highestPhase].start);
     });
 
-    this._button(ctx, 'LEVEL SELECT', btnX, H * 0.68, btnW, btnH, '#44ff88', () => {
+    this._button(ctx, 'LEVEL SELECT', btnX, btnsStartY + btnH + btnGap, btnW, btnH, '#44ff88', () => {
       this.setState('phase_select');
     });
 
-    this._button(ctx, 'CHANGE PROFILE', btnX, H * 0.77, btnW, btnH, '#8888ff', () => {
+    this._button(ctx, 'CHANGE PROFILE', btnX, btnsStartY + 2 * (btnH + btnGap), btnW, btnH, '#8888ff', () => {
       this.setState('profile_select');
     });
 
     // Controls hint
-    this._neonText(ctx, 'WASD / LEFT STICK: MOVE   ·   IJKL / RIGHT STICK / MOUSE: SHOOT', W / 2, H - 24, '#334455', 11);
+    this._neonText(ctx, 'WASD / LEFT STICK: MOVE   ·   IJKL / RIGHT STICK / MOUSE: SHOOT', W / 2, H - 14, '#334455', 10);
   }
 
   _drawPlaying(ctx) {
