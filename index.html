@@ -1,0 +1,2350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#000008">
+  <title>Geometry Wars</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      background: #000008;
+      overflow: hidden;
+      font-family: 'Courier New', Courier, monospace;
+    }
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #c { display: block; }
+    #nameInput {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: #000020;
+      border: 2px solid #00ffff;
+      color: #00ffff;
+      font-family: 'Courier New', monospace;
+      font-size: 20px;
+      padding: 12px 20px;
+      text-align: center;
+      outline: none;
+      box-shadow: 0 0 24px #00ffff88, inset 0 0 10px rgba(0,255,255,0.08);
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      width: 290px;
+      z-index: 100;
+      border-radius: 2px;
+    }
+    #nameInput::placeholder { color: #336677; letter-spacing: 2px; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<input id="nameInput" type="text" maxlength="12" placeholder="ENTER NAME" autocomplete="off" autocorrect="off" spellcheck="false">
+<script>
+'use strict';
+// =============================================================================
+// Vec2 — 2D vector math
+// =============================================================================
+class Vec2 {
+  constructor(x = 0, y = 0) {
+    this.x = x;
+    this.y = y;
+  }
+
+  clone() {
+    return new Vec2(this.x, this.y);
+  }
+
+  set(x, y) {
+    this.x = x;
+    this.y = y;
+    return this;
+  }
+
+  add(v) {
+    return new Vec2(this.x + v.x, this.y + v.y);
+  }
+
+  sub(v) {
+    return new Vec2(this.x - v.x, this.y - v.y);
+  }
+
+  scale(s) {
+    return new Vec2(this.x * s, this.y * s);
+  }
+
+  dot(v) {
+    return this.x * v.x + this.y * v.y;
+  }
+
+  len() {
+    return Math.sqrt(this.x * this.x + this.y * this.y);
+  }
+
+  lenSq() {
+    return this.x * this.x + this.y * this.y;
+  }
+
+  norm() {
+    const l = this.len();
+    if (l === 0) return new Vec2(0, 0);
+    return new Vec2(this.x / l, this.y / l);
+  }
+
+  angle() {
+    return Math.atan2(this.y, this.x);
+  }
+
+  distTo(v) {
+    const dx = this.x - v.x;
+    const dy = this.y - v.y;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  static fromAngle(a, len = 1) {
+    return new Vec2(Math.cos(a) * len, Math.sin(a) * len);
+  }
+
+  static lerp(a, b, t) {
+    return new Vec2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+  }
+}
+
+// =============================================================================
+// Utils — math helpers
+// =============================================================================
+const rand = (min, max) => Math.random() * (max - min) + min;
+const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// =============================================================================
+// AudioManager — Web Audio API synth sound effects
+// =============================================================================
+class AudioManager {
+  constructor() {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      this.ctx = AC ? new AC() : null;
+    } catch (e) {
+      this.ctx = null;
+    }
+  }
+
+  resume() {
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume();
+    }
+  }
+
+  _master(vol = 0.12) {
+    if (!this.ctx) return null;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(vol, this.ctx.currentTime);
+    g.connect(this.ctx.destination);
+    return g;
+  }
+
+  _osc(freq, type, dur, gainVal, master) {
+    if (!this.ctx || !master) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, now);
+
+    g.gain.setValueAtTime(gainVal, now);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    osc.connect(g);
+    g.connect(master);
+
+    osc.start(now);
+    osc.stop(now + dur + 0.01);
+  }
+
+  shoot() {
+    if (!this.ctx) return;
+    this.resume();
+    const master = this._master(0.10);
+    if (!master) return;
+    this._osc(800, 'square', 0.06, 1.0, master);
+  }
+
+  explode(size = 1) {
+    if (!this.ctx) return;
+    this.resume();
+    const master = this._master(0.18);
+    if (!master) return;
+
+    const now = this.ctx.currentTime;
+    const dur = 0.25;
+
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    const filter = this.ctx.createBiquadFilter();
+
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(180 * size, now);
+    osc.frequency.exponentialRampToValueAtTime(20, now + dur);
+
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(1200 * size, now);
+    filter.frequency.exponentialRampToValueAtTime(100, now + dur);
+
+    g.gain.setValueAtTime(1.0, now);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    osc.connect(filter);
+    filter.connect(g);
+    g.connect(master);
+
+    osc.start(now);
+    osc.stop(now + dur + 0.01);
+  }
+
+  die() {
+    if (!this.ctx) return;
+    this.resume();
+    const master = this._master(0.15);
+    if (!master) return;
+
+    const delays = [0, 0.15, 0.30];
+    for (const delay of delays) {
+      const freq = rand(80, 200);
+      const now = this.ctx.currentTime + delay;
+      const dur = 0.18;
+
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(freq, now);
+      osc.frequency.exponentialRampToValueAtTime(20, now + dur);
+
+      g.gain.setValueAtTime(0.8, now);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+      osc.connect(g);
+      g.connect(master);
+
+      osc.start(now);
+      osc.stop(now + dur + 0.01);
+    }
+  }
+
+  levelUp() {
+    if (!this.ctx) return;
+    this.resume();
+    const master = this._master(0.12);
+    if (!master) return;
+
+    const freqs = [440, 550, 660, 880];
+    const noteDur = 0.08;
+    freqs.forEach((freq, i) => {
+      this._osc(freq, 'square', noteDur, 1.0, master);
+      // Each note is scheduled by creating a separate timed oscillator
+      const now = this.ctx.currentTime + i * 0.08;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(freq, now);
+
+      g.gain.setValueAtTime(1.0, now);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + noteDur);
+
+      osc.connect(g);
+      g.connect(master);
+
+      osc.start(now);
+      osc.stop(now + noteDur + 0.01);
+    });
+  }
+
+  phaseComplete() {
+    if (!this.ctx) return;
+    this.resume();
+    const master = this._master(0.12);
+    if (!master) return;
+
+    const freqs = [440, 550, 660, 770, 880, 1100];
+    const noteDur = 0.10;
+    freqs.forEach((freq, i) => {
+      const now = this.ctx.currentTime + i * 0.10;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(freq, now);
+
+      g.gain.setValueAtTime(1.0, now);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + noteDur);
+
+      osc.connect(g);
+      g.connect(master);
+
+      osc.start(now);
+      osc.stop(now + noteDur + 0.01);
+    });
+  }
+}
+
+// =============================================================================
+// InputManager — keyboard, mouse, and dual touch joystick input
+// =============================================================================
+class InputManager {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.left = new Vec2();
+    this.right = new Vec2();
+    this.shooting = false;
+    this.keys = {};
+    this.mouse = { pos: new Vec2(), down: false };
+    this.leftStick = { id: null, origin: new Vec2(), pos: new Vec2() };
+    this.rightStick = { id: null, origin: new Vec2(), pos: new Vec2() };
+    this._bind();
+  }
+
+  _bind() {
+    window.addEventListener('keydown', e => { this.keys[e.code] = true; });
+    window.addEventListener('keyup', e => { this.keys[e.code] = false; });
+
+    this.canvas.addEventListener('mousemove', e => {
+      const r = this.canvas.getBoundingClientRect();
+      const scaleX = this.canvas.width / r.width;
+      const scaleY = this.canvas.height / r.height;
+      this.mouse.pos.set(
+        (e.clientX - r.left) * scaleX,
+        (e.clientY - r.top) * scaleY
+      );
+    });
+
+    this.canvas.addEventListener('mousedown', e => {
+      this.mouse.down = true;
+      const r = this.canvas.getBoundingClientRect();
+      const scaleX = this.canvas.width / r.width;
+      const scaleY = this.canvas.height / r.height;
+      this.mouse.pos.set(
+        (e.clientX - r.left) * scaleX,
+        (e.clientY - r.top) * scaleY
+      );
+    });
+
+    window.addEventListener('mouseup', () => { this.mouse.down = false; });
+
+    this.canvas.addEventListener('touchstart', e => this._ts(e), { passive: false });
+    this.canvas.addEventListener('touchmove', e => this._tm(e), { passive: false });
+    this.canvas.addEventListener('touchend', e => this._te(e), { passive: false });
+    this.canvas.addEventListener('touchcancel', e => this._te(e), { passive: false });
+  }
+
+  _cp(touch) {
+    const r = this.canvas.getBoundingClientRect();
+    const scaleX = this.canvas.width / r.width;
+    const scaleY = this.canvas.height / r.height;
+    return new Vec2(
+      (touch.clientX - r.left) * scaleX,
+      (touch.clientY - r.top) * scaleY
+    );
+  }
+
+  _ts(e) {
+    e.preventDefault();
+    for (const touch of e.changedTouches) {
+      const cp = this._cp(touch);
+      if (cp.x < this.canvas.width / 2) {
+        if (this.leftStick.id === null) {
+          this.leftStick.id = touch.identifier;
+          this.leftStick.origin.set(cp.x, cp.y);
+          this.leftStick.pos.set(cp.x, cp.y);
+        }
+      } else {
+        if (this.rightStick.id === null) {
+          this.rightStick.id = touch.identifier;
+          this.rightStick.origin.set(cp.x, cp.y);
+          this.rightStick.pos.set(cp.x, cp.y);
+        }
+      }
+    }
+  }
+
+  _tm(e) {
+    e.preventDefault();
+    for (const touch of e.changedTouches) {
+      const cp = this._cp(touch);
+      if (touch.identifier === this.leftStick.id) {
+        this.leftStick.pos.set(cp.x, cp.y);
+      } else if (touch.identifier === this.rightStick.id) {
+        this.rightStick.pos.set(cp.x, cp.y);
+      }
+    }
+  }
+
+  _te(e) {
+    e.preventDefault();
+    for (const touch of e.changedTouches) {
+      if (touch.identifier === this.leftStick.id) {
+        this.leftStick.id = null;
+        this.left.set(0, 0);
+      } else if (touch.identifier === this.rightStick.id) {
+        this.rightStick.id = null;
+        this.right.set(0, 0);
+        this.shooting = false;
+      }
+    }
+  }
+
+  update(playerPos) {
+    const MAX_RADIUS = 65;
+
+    // Left stick / WASD
+    if (this.leftStick.id !== null) {
+      const dx = this.leftStick.pos.x - this.leftStick.origin.x;
+      const dy = this.leftStick.pos.y - this.leftStick.origin.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 0) {
+        const clamped = Math.min(dist, MAX_RADIUS);
+        const mag = clamped / MAX_RADIUS;
+        this.left.set((dx / dist) * mag, (dy / dist) * mag);
+      } else {
+        this.left.set(0, 0);
+      }
+    } else {
+      let lx = 0;
+      let ly = 0;
+      if (this.keys['KeyW'] || this.keys['ArrowUp']) ly -= 1;
+      if (this.keys['KeyS'] || this.keys['ArrowDown']) ly += 1;
+      if (this.keys['KeyA'] || this.keys['ArrowLeft']) lx -= 1;
+      if (this.keys['KeyD'] || this.keys['ArrowRight']) lx += 1;
+      if (lx !== 0 && ly !== 0) {
+        const inv = 1 / Math.sqrt(2);
+        lx *= inv;
+        ly *= inv;
+      }
+      this.left.set(lx, ly);
+    }
+
+    // Right stick / mouse / IJKL
+    if (this.rightStick.id !== null) {
+      const dx = this.rightStick.pos.x - this.rightStick.origin.x;
+      const dy = this.rightStick.pos.y - this.rightStick.origin.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 0) {
+        this.right.set(dx / dist, dy / dist);
+        this.shooting = dist > 12;
+      } else {
+        this.right.set(0, 0);
+        this.shooting = false;
+      }
+    } else if (this.mouse.down && playerPos) {
+      const dx = this.mouse.pos.x - playerPos.x;
+      const dy = this.mouse.pos.y - playerPos.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 0) {
+        this.right.set(dx / dist, dy / dist);
+      }
+      this.shooting = dist > 15;
+    } else {
+      let rx = 0;
+      let ry = 0;
+      if (this.keys['KeyI']) ry -= 1;
+      if (this.keys['KeyK']) ry += 1;
+      if (this.keys['KeyJ']) rx -= 1;
+      if (this.keys['KeyL']) rx += 1;
+      const shooting = rx !== 0 || ry !== 0;
+      if (rx !== 0 && ry !== 0) {
+        const inv = 1 / Math.sqrt(2);
+        rx *= inv;
+        ry *= inv;
+      }
+      this.right.set(rx, ry);
+      this.shooting = shooting;
+    }
+  }
+
+  getLeftStick() {
+    return this.leftStick.id !== null ? this.leftStick : null;
+  }
+
+  getRightStick() {
+    return this.rightStick.id !== null ? this.rightStick : null;
+  }
+}
+
+// =============================================================================
+// Particle — single visual particle
+// =============================================================================
+class Particle {
+  constructor(x, y, vx, vy, color, size, life) {
+    this.pos = new Vec2(x, y);
+    this.vel = new Vec2(vx, vy);
+    this.color = color;
+    this.size = size;
+    this.life = life;
+    this.maxLife = life;
+    this.dead = false;
+  }
+
+  update(dt) {
+    this.pos.x += this.vel.x * dt;
+    this.pos.y += this.vel.y * dt;
+    const drag = Math.pow(0.9, dt * 60);
+    this.vel.x *= drag;
+    this.vel.y *= drag;
+    this.life -= dt;
+    if (this.life <= 0) {
+      this.life = 0;
+      this.dead = true;
+    }
+  }
+
+  draw(ctx) {
+    ctx.save();
+    const t = this.life / this.maxLife;
+    const alpha = t * t;
+    const radius = this.size * t;
+    ctx.globalAlpha = alpha;
+    ctx.shadowColor = this.color;
+    ctx.shadowBlur = this.size * 2;
+    ctx.fillStyle = this.color;
+    ctx.beginPath();
+    ctx.arc(this.pos.x, this.pos.y, Math.max(radius, 0.1), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// =============================================================================
+// ParticleSystem — manages a pool of Particle instances
+// =============================================================================
+class ParticleSystem {
+  constructor() {
+    this.p = [];
+  }
+
+  emit(x, y, color, n, spd, szMin, szMax, liMin, liMax) {
+    for (let i = 0; i < n; i++) {
+      const angle = rand(0, Math.PI * 2);
+      const speed = rand(spd * 0.3, spd);
+      const vx = Math.cos(angle) * speed;
+      const vy = Math.sin(angle) * speed;
+      const size = rand(szMin, szMax);
+      const life = rand(liMin, liMax);
+      this.p.push(new Particle(x, y, vx, vy, color, size, life));
+    }
+  }
+
+  update(dt) {
+    for (let i = this.p.length - 1; i >= 0; i--) {
+      this.p[i].update(dt);
+      if (this.p[i].dead) {
+        this.p.splice(i, 1);
+      }
+    }
+  }
+
+  draw(ctx) {
+    for (let i = 0; i < this.p.length; i++) {
+      this.p[i].draw(ctx);
+    }
+  }
+
+  clear() {
+    this.p = [];
+  }
+}
+
+// =============================================================================
+// Grid — animated background grid with spring deformation
+// =============================================================================
+class Grid {
+  constructor(spacing = 44) {
+    this.sp = spacing;
+    this.nodes = [];
+    this.W = 0;
+    this.H = 0;
+  }
+
+  resize(W, H) {
+    this.W = W;
+    this.H = H;
+    const sp = this.sp;
+    const cols = Math.ceil(W / sp) + 2;
+    const rows = Math.ceil(H / sp) + 2;
+    this.nodes = [];
+    for (let r = 0; r < rows; r++) {
+      const row = [];
+      for (let c = 0; c < cols; c++) {
+        const ox = c * sp - sp;
+        const oy = r * sp - sp;
+        row.push({ ox, oy, x: ox, y: oy });
+      }
+      this.nodes.push(row);
+    }
+  }
+
+  update(dt, entities) {
+    const limit = Math.min(entities.length, 30);
+    const rows = this.nodes.length;
+    if (rows === 0) return;
+    const cols = this.nodes[0].length;
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const node = this.nodes[r][c];
+        let fx = 0;
+        let fy = 0;
+
+        for (let e = 0; e < limit; e++) {
+          const ent = entities[e];
+          if (!ent.pos || ent.gridStrength === undefined) continue;
+          const dx = node.ox - ent.pos.x;
+          const dy = node.oy - ent.pos.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 180 && dist > 0) {
+            const force = ent.gridStrength * 4000 / (dist * dist);
+            fx += (dx / dist) * force;
+            fy += (dy / dist) * force;
+          }
+        }
+
+        node.x += (node.ox - node.x + clamp(fx, -18, 18)) * dt * 10;
+        node.y += (node.oy - node.y + clamp(fy, -18, 18)) * dt * 10;
+      }
+    }
+  }
+
+  draw(ctx) {
+    const rows = this.nodes.length;
+    if (rows === 0) return;
+    const cols = this.nodes[0].length;
+
+    ctx.strokeStyle = 'rgba(0,80,180,0.3)';
+    ctx.lineWidth = 0.8;
+
+    // Horizontal lines
+    for (let r = 0; r < rows; r++) {
+      ctx.beginPath();
+      for (let c = 0; c < cols; c++) {
+        const node = this.nodes[r][c];
+        if (c === 0) {
+          ctx.moveTo(node.x, node.y);
+        } else {
+          ctx.lineTo(node.x, node.y);
+        }
+      }
+      ctx.stroke();
+    }
+
+    // Vertical lines
+    for (let c = 0; c < cols; c++) {
+      ctx.beginPath();
+      for (let r = 0; r < rows; r++) {
+        const node = this.nodes[r][c];
+        if (r === 0) {
+          ctx.moveTo(node.x, node.y);
+        } else {
+          ctx.lineTo(node.x, node.y);
+        }
+      }
+      ctx.stroke();
+    }
+  }
+}
+
+// =============================================================================
+// Bullet — player projectile
+// =============================================================================
+class Bullet {
+  constructor(x, y, vx, vy) {
+    this.pos = new Vec2(x, y);
+    this.vel = new Vec2(vx, vy);
+    this.dead = false;
+    this.trail = [];
+    this.gridStrength = -1.5;
+    this.color = '#ffff00';
+    this.glowColor = '#ff8800';
+    this.radius = 3;
+  }
+
+  update(dt, W, H) {
+    this.trail.push(this.pos.clone());
+    if (this.trail.length > 7) {
+      this.trail.shift();
+    }
+
+    this.pos.x += this.vel.x * dt;
+    this.pos.y += this.vel.y * dt;
+
+    const margin = 10;
+    if (
+      this.pos.x < -margin ||
+      this.pos.x > W + margin ||
+      this.pos.y < -margin ||
+      this.pos.y > H + margin
+    ) {
+      this.dead = true;
+    }
+  }
+
+  draw(ctx) {
+    ctx.save();
+
+    // Draw trail
+    for (let i = 0; i < this.trail.length; i++) {
+      const pt = this.trail[i];
+      const alpha = (i / this.trail.length) * 0.5;
+      const trailRadius = Math.max(this.radius * (i / this.trail.length), 0.5);
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = this.color;
+      ctx.shadowColor = this.color;
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, trailRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Draw bullet
+    ctx.globalAlpha = 1.0;
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = this.color;
+    ctx.shadowBlur = 14;
+    ctx.beginPath();
+    ctx.arc(this.pos.x, this.pos.y, this.radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+}
+class Enemy {
+  constructor(x, y) {
+    this.pos = new Vec2(x, y);
+    this.vel = new Vec2();
+    this.dead = false;
+    this.hp = 1;
+    this.score = 50;
+    this.size = 12;
+    this.angle = 0;
+    this.color = '#ff4444';
+    this.gridStrength = 2;
+    this.flash = 0;
+    this.pendingBullets = null;
+    this.pendingSpawns = null;
+  }
+
+  hit() {
+    this.hp--;
+    this.flash = 0.12;
+    if (this.hp <= 0) {
+      this.dead = true;
+      return true;
+    }
+    return false;
+  }
+
+  clampBounds(W, H, margin = 12) {
+    this.pos.x = clamp(this.pos.x, margin, W - margin);
+    this.pos.y = clamp(this.pos.y, margin, H - margin);
+  }
+
+  collides(pos, r) {
+    return this.pos.distTo(pos) < this.size + r;
+  }
+
+  update(dt, playerPos, W, H) {
+    this.pos.x += this.vel.x * dt;
+    this.pos.y += this.vel.y * dt;
+    this.clampBounds(W, H);
+    this.angle += dt * 2;
+    if (this.flash > 0) this.flash -= dt;
+  }
+
+  drawBase(ctx, drawFn) {
+    ctx.save();
+    ctx.translate(this.pos.x, this.pos.y);
+    ctx.rotate(this.angle);
+    const color = this.flash > 0 ? '#ffffff' : this.color;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color + '28';
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 18;
+    ctx.lineWidth = 2;
+    drawFn(ctx, this.size);
+    ctx.restore();
+  }
+
+  draw(ctx) {
+    this.drawBase(ctx, (ctx, s) => {
+      ctx.beginPath();
+      ctx.arc(0, 0, s, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    });
+  }
+}
+
+class Grunt extends Enemy {
+  constructor(x, y) {
+    super(x, y);
+    this.color = '#ff3333';
+    this.size = 11;
+    this.score = 50;
+    this.hp = 1;
+    this.speed = rand(90, 135);
+    this.gridStrength = 2;
+  }
+
+  update(dt, playerPos, W, H) {
+    const dir = playerPos.clone().sub(this.pos);
+    const n = dir.norm();
+    this.vel.x = n.x * this.speed;
+    this.vel.y = n.y * this.speed;
+    super.update(dt, playerPos, W, H);
+  }
+
+  draw(ctx) {
+    this.drawBase(ctx, (ctx, s) => {
+      ctx.beginPath();
+      ctx.moveTo(0, -s);
+      ctx.lineTo(s * 0.7, 0);
+      ctx.lineTo(0, s);
+      ctx.lineTo(-s * 0.7, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    });
+  }
+}
+
+class Wanderer extends Enemy {
+  constructor(x, y) {
+    super(x, y);
+    this.color = '#3399ff';
+    this.size = 13;
+    this.score = 100;
+    this.hp = 1;
+    this.speed = rand(60, 95);
+    this.rotSpeed = rand(2.5, 5) * (Math.random() < 0.5 ? 1 : -1);
+    this.turnTimer = rand(0.6, 2.2);
+    this.gridStrength = 1.5;
+    const a = rand(0, Math.PI * 2);
+    this.vel = new Vec2(Math.cos(a) * this.speed, Math.sin(a) * this.speed);
+  }
+
+  update(dt, playerPos, W, H) {
+    this.angle += this.rotSpeed * dt;
+    this.turnTimer -= dt;
+    if (this.turnTimer <= 0) {
+      this.speed = rand(60, 95);
+      const a = rand(0, Math.PI * 2);
+      this.vel = new Vec2(Math.cos(a) * this.speed, Math.sin(a) * this.speed);
+      this.turnTimer = rand(0.8, 2.5);
+    }
+
+    this.pos.x += this.vel.x * dt;
+    this.pos.y += this.vel.y * dt;
+
+    const margin = 15;
+    if (this.pos.x < margin) { this.vel.x = Math.abs(this.vel.x); this.pos.x = margin; }
+    if (this.pos.x > W - margin) { this.vel.x = -Math.abs(this.vel.x); this.pos.x = W - margin; }
+    if (this.pos.y < margin) { this.vel.y = Math.abs(this.vel.y); this.pos.y = margin; }
+    if (this.pos.y > H - margin) { this.vel.y = -Math.abs(this.vel.y); this.pos.y = H - margin; }
+
+    if (this.flash > 0) this.flash -= dt;
+  }
+
+  draw(ctx) {
+    this.drawBase(ctx, (ctx, s) => {
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        const px = Math.cos(a) * s;
+        const py = Math.sin(a) * s;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    });
+  }
+}
+
+class Pinwheel extends Enemy {
+  constructor(x, y) {
+    super(x, y);
+    this.color = '#ff44ff';
+    this.size = 15;
+    this.score = 150;
+    this.hp = 2;
+    this.speed = rand(45, 75);
+    this.rotSpeed = rand(5, 9) * (Math.random() < 0.5 ? 1 : -1);
+    this.shootTimer = rand(1.2, 2.5);
+    this.pendingBullets = [];
+    this.gridStrength = 4;
+    const a = rand(0, Math.PI * 2);
+    this.vel = new Vec2(Math.cos(a) * this.speed, Math.sin(a) * this.speed);
+  }
+
+  update(dt, playerPos, W, H) {
+    this.angle += this.rotSpeed * dt;
+
+    this.pos.x += this.vel.x * dt;
+    this.pos.y += this.vel.y * dt;
+
+    const margin = 18;
+    if (this.pos.x < margin) { this.vel.x = Math.abs(this.vel.x); this.pos.x = margin; }
+    if (this.pos.x > W - margin) { this.vel.x = -Math.abs(this.vel.x); this.pos.x = W - margin; }
+    if (this.pos.y < margin) { this.vel.y = Math.abs(this.vel.y); this.pos.y = margin; }
+    if (this.pos.y > H - margin) { this.vel.y = -Math.abs(this.vel.y); this.pos.y = H - margin; }
+
+    this.shootTimer -= dt;
+    if (this.shootTimer <= 0) {
+      this.shootTimer = rand(1.5, 3.0);
+      for (let i = 0; i < 4; i++) {
+        const ai = this.angle + (i / 4) * Math.PI * 2;
+        const bv = Vec2.fromAngle(ai, 160);
+        const b = new Bullet(this.pos.x, this.pos.y, bv.x, bv.y);
+        b.color = '#ff44ff';
+        b.glowColor = '#aa00aa';
+        this.pendingBullets.push(b);
+      }
+    }
+
+    if (this.flash > 0) this.flash -= dt;
+  }
+
+  draw(ctx) {
+    this.drawBase(ctx, (ctx, s) => {
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2;
+        const cx = Math.cos(a) * s * 0.55;
+        const cy = Math.sin(a) * s * 0.55;
+        ctx.beginPath();
+        ctx.arc(cx, cy, s * 0.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(0, 0, s * 0.28, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    });
+  }
+}
+
+class Snake extends Enemy {
+  constructor(x, y) {
+    super(x, y);
+    this.color = '#44ff88';
+    this.size = 10;
+    this.score = 75;
+    this.hp = 1;
+    this.speed = rand(110, 160);
+    this.angle = rand(0, Math.PI * 2);
+    this.turnSpeed = rand(1.8, 3.2) * (Math.random() < 0.5 ? 1 : -1);
+    this.segs = [];
+    this.segTimer = 0;
+    this.gridStrength = 1.5;
+  }
+
+  update(dt, playerPos, W, H) {
+    this.angle += this.turnSpeed * dt;
+
+    const mv = Vec2.fromAngle(this.angle, this.speed);
+    this.pos.x += mv.x * dt;
+    this.pos.y += mv.y * dt;
+
+    const margin = 12;
+    if (this.pos.x < margin) {
+      this.angle = Math.PI - this.angle;
+      this.pos.x = margin;
+    } else if (this.pos.x > W - margin) {
+      this.angle = Math.PI - this.angle;
+      this.pos.x = W - margin;
+    }
+    if (this.pos.y < margin) {
+      this.angle = -this.angle;
+      this.pos.y = margin;
+    } else if (this.pos.y > H - margin) {
+      this.angle = -this.angle;
+      this.pos.y = H - margin;
+    }
+
+    this.segTimer += dt;
+    if (this.segTimer > 0.04) {
+      this.segTimer = 0;
+      this.segs.push({ x: this.pos.x, y: this.pos.y });
+      if (this.segs.length > 14) this.segs.shift();
+    }
+
+    if (this.flash > 0) this.flash -= dt;
+  }
+
+  draw(ctx) {
+    const color = this.flash > 0 ? '#ffffff' : this.color;
+    const len = this.segs.length;
+
+    for (let i = 0; i < len; i++) {
+      const seg = this.segs[i];
+      const alpha = (i / len) * 0.65;
+      const r = this.size * 0.55 * (i / len);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.arc(seg.x, seg.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.translate(this.pos.x, this.pos.y);
+    ctx.rotate(this.angle);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = color;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, this.size, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#000000';
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.arc(this.size * 0.45, -this.size * 0.35, this.size * 0.18, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(this.size * 0.45, this.size * 0.35, this.size * 0.18, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+}
+
+class Bloomer extends Enemy {
+  constructor(x, y, sz = 'large') {
+    super(x, y);
+    this.sz = sz;
+    this.color = '#ffaa00';
+    this.pendingSpawns = [];
+
+    if (sz === 'large') {
+      this.size = 22;
+      this.score = 100;
+      this.hp = 3;
+      this.speed = rand(45, 75);
+      this.gridStrength = 5;
+    } else if (sz === 'medium') {
+      this.size = 14;
+      this.score = 75;
+      this.hp = 2;
+      this.speed = rand(80, 120);
+      this.gridStrength = 3;
+    } else {
+      this.size = 9;
+      this.score = 50;
+      this.hp = 1;
+      this.speed = rand(130, 170);
+      this.gridStrength = 2;
+    }
+
+    this.rotSpeed = rand(1.5, 3.5) * (Math.random() < 0.5 ? 1 : -1);
+    const a = rand(0, Math.PI * 2);
+    this.vel = new Vec2(Math.cos(a) * this.speed, Math.sin(a) * this.speed);
+  }
+
+  hit() {
+    const killed = super.hit();
+    if (killed && this.sz !== 'small') {
+      const nextSz = this.sz === 'large' ? 'medium' : 'small';
+      const count = this.sz === 'large' ? 3 : 4;
+      for (let i = 0; i < count; i++) {
+        this.pendingSpawns.push(new Bloomer(this.pos.x, this.pos.y, nextSz));
+      }
+    }
+    return killed;
+  }
+
+  update(dt, playerPos, W, H) {
+    this.angle += this.rotSpeed * dt;
+
+    this.pos.x += this.vel.x * dt;
+    this.pos.y += this.vel.y * dt;
+
+    const margin = 18;
+    if (this.pos.x < margin) { this.vel.x = Math.abs(this.vel.x); this.pos.x = margin; }
+    if (this.pos.x > W - margin) { this.vel.x = -Math.abs(this.vel.x); this.pos.x = W - margin; }
+    if (this.pos.y < margin) { this.vel.y = Math.abs(this.vel.y); this.pos.y = margin; }
+    if (this.pos.y > H - margin) { this.vel.y = -Math.abs(this.vel.y); this.pos.y = H - margin; }
+
+    if (this.flash > 0) this.flash -= dt;
+  }
+
+  draw(ctx) {
+    this.drawBase(ctx, (ctx, s) => {
+      ctx.beginPath();
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        const r = i % 2 === 0 ? s : s * 0.55;
+        const px = Math.cos(a) * r;
+        const py = Math.sin(a) * r;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    });
+  }
+}
+
+class Player {
+  constructor(x, y) {
+    this.pos = new Vec2(x, y);
+    this.vel = new Vec2();
+    this.angle = 0;
+    this.size = 12;
+    this.invincible = 0;
+    this.fireT = 0;
+    this.trail = [];
+    this.trailT = 0;
+    this.gridStrength = -8;
+  }
+
+  update(dt, input, W, H) {
+    const tx = input.left.x * 290;
+    const ty = input.left.y * 290;
+    const f = 1 - Math.pow(0.01, dt);
+    this.vel.x = lerp(this.vel.x, tx, f);
+    this.vel.y = lerp(this.vel.y, ty, f);
+
+    this.pos.x += this.vel.x * dt;
+    this.pos.y += this.vel.y * dt;
+    this.pos.x = clamp(this.pos.x, 14, W - 14);
+    this.pos.y = clamp(this.pos.y, 14, H - 14);
+
+    if (input.right.len() > 0.1) {
+      this.angle = input.right.angle();
+    } else if (this.vel.len() > 25) {
+      this.angle = this.vel.angle();
+    }
+
+    if (this.invincible > 0) this.invincible = Math.max(0, this.invincible - dt);
+    if (this.fireT > 0) this.fireT = Math.max(0, this.fireT - dt);
+
+    this.trailT -= dt;
+    if (this.trailT <= 0 && this.vel.len() > 25) {
+      this.trailT = 0.03;
+      this.trail.push({ x: this.pos.x, y: this.pos.y, life: 0.28 });
+    }
+
+    for (let i = this.trail.length - 1; i >= 0; i--) {
+      this.trail[i].life -= dt;
+      if (this.trail[i].life <= 0) this.trail.splice(i, 1);
+    }
+  }
+
+  canFire() {
+    return this.fireT <= 0;
+  }
+
+  fire(dir) {
+    this.fireT = 0.08;
+    const spread = (Math.random() - 0.5) * 0.08;
+    const a = dir.angle() + spread;
+    return new Bullet(this.pos.x, this.pos.y, Math.cos(a) * 610, Math.sin(a) * 610);
+  }
+
+  draw(ctx, blink) {
+    if (this.invincible > 0 && blink) return;
+
+    for (const t of this.trail) {
+      const alpha = (t.life / 0.28) * 0.45;
+      const r = 4 * (t.life / 0.28);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = '#00ffff';
+      ctx.shadowColor = '#00ffff';
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.translate(this.pos.x, this.pos.y);
+    ctx.rotate(this.angle);
+
+    ctx.shadowColor = '#00ffff';
+    ctx.shadowBlur = 22;
+    ctx.strokeStyle = '#00ffff';
+    ctx.fillStyle = 'rgba(0,220,255,0.12)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(15, 0);
+    ctx.lineTo(-9, -10);
+    ctx.lineTo(-5, 0);
+    ctx.lineTo(-9, 10);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    if (Math.random() < 0.65) {
+      const flameLen = rand(14, 21);
+      ctx.shadowColor = '#ff7700';
+      ctx.shadowBlur = 14;
+      ctx.strokeStyle = '#ff5500';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(-5, -4);
+      ctx.lineTo(-flameLen, 0);
+      ctx.lineTo(-5, 4);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+}
+const PHASES_DATA = [
+  { name: 'SECTOR ALPHA', color: '#00ffff', start: 0,  end: 5  },
+  { name: 'SECTOR BETA',  color: '#44ff88', start: 6,  end: 11 },
+  { name: 'SECTOR GAMMA', color: '#ffff44', start: 12, end: 17 },
+  { name: 'SECTOR DELTA', color: '#ff8844', start: 18, end: 23 },
+  { name: 'SECTOR OMEGA', color: '#ff44ff', start: 24, end: 29 },
+];
+
+const LEVELS_DATA = [
+  // Phase 0 - SECTOR ALPHA (indices 0-5)
+  { name:'First Contact',  phase:0, spawns:[{t:'Grunt',n:6,d:0,s:0.5}] },
+  { name:'The Swarm',      phase:0, spawns:[{t:'Grunt',n:14,d:0,s:0.25}] },
+  { name:'Drifters',       phase:0, spawns:[{t:'Grunt',n:8,d:0,s:0.4},{t:'Wanderer',n:4,d:1,s:0.5}] },
+  { name:'Hex Field',      phase:0, spawns:[{t:'Grunt',n:6,d:0,s:0.4},{t:'Wanderer',n:8,d:0.5,s:0.4}] },
+  { name:'Spin Cycle',     phase:0, spawns:[{t:'Grunt',n:4,d:0,s:0.5},{t:'Wanderer',n:4,d:0.8,s:0.5},{t:'Pinwheel',n:2,d:1.5,s:0.8}] },
+  { name:'Sector Clear',   phase:0, spawns:[{t:'Grunt',n:10,d:0,s:0.3},{t:'Wanderer',n:6,d:1,s:0.4},{t:'Pinwheel',n:3,d:2,s:0.7}] },
+  // Phase 1 - SECTOR BETA (indices 6-11)
+  { name:'Serpentine',     phase:1, spawns:[{t:'Grunt',n:10,d:0,s:0.3},{t:'Snake',n:4,d:1,s:0.6}] },
+  { name:'Bloom',          phase:1, spawns:[{t:'Grunt',n:8,d:0,s:0.35},{t:'Wanderer',n:4,d:0.8,s:0.5},{t:'Bloomer',n:2,d:1.5,s:0.8,sz:'large'}] },
+  { name:'Pinwheel Storm', phase:1, spawns:[{t:'Grunt',n:6,d:0,s:0.4},{t:'Pinwheel',n:6,d:0.6,s:0.5}] },
+  { name:'Snake Pit',      phase:1, spawns:[{t:'Snake',n:8,d:0,s:0.4},{t:'Wanderer',n:6,d:1,s:0.4}] },
+  { name:'Cascade',        phase:1, spawns:[{t:'Bloomer',n:3,d:0,s:0.7,sz:'large'},{t:'Grunt',n:8,d:1.5,s:0.35}] },
+  { name:'Beta Gauntlet',  phase:1, spawns:[{t:'Grunt',n:12,d:0,s:0.25},{t:'Wanderer',n:6,d:1,s:0.35},{t:'Pinwheel',n:4,d:2,s:0.5},{t:'Snake',n:4,d:3,s:0.5},{t:'Bloomer',n:2,d:4,s:0.8,sz:'large'}] },
+  // Phase 2 - SECTOR GAMMA (indices 12-17)
+  { name:'Convergence',    phase:2, spawns:[{t:'Grunt',n:20,d:0,s:0.18}] },
+  { name:'Chaos Web',      phase:2, spawns:[{t:'Snake',n:8,d:0,s:0.4},{t:'Wanderer',n:4,d:1,s:0.4},{t:'Pinwheel',n:4,d:2,s:0.5}] },
+  { name:'Big Bang',       phase:2, spawns:[{t:'Bloomer',n:5,d:0,s:0.5,sz:'large'},{t:'Wanderer',n:6,d:2,s:0.4}] },
+  { name:'Death Spiral',   phase:2, spawns:[{t:'Snake',n:10,d:0,s:0.3},{t:'Grunt',n:8,d:1,s:0.3},{t:'Pinwheel',n:4,d:2.5,s:0.5}] },
+  { name:'Overload',       phase:2, spawns:[{t:'Bloomer',n:6,d:0,s:0.5,sz:'large'},{t:'Pinwheel',n:6,d:2,s:0.4},{t:'Grunt',n:6,d:3.5,s:0.3}] },
+  { name:'Gamma Gauntlet', phase:2, spawns:[{t:'Grunt',n:16,d:0,s:0.22},{t:'Wanderer',n:8,d:1.5,s:0.3},{t:'Snake',n:6,d:3,s:0.4},{t:'Pinwheel',n:6,d:4.5,s:0.4},{t:'Bloomer',n:4,d:6,s:0.6,sz:'large'}] },
+  // Phase 3 - SECTOR DELTA (indices 18-23)
+  { name:'The Flood',      phase:3, spawns:[{t:'Grunt',n:30,d:0,s:0.15}] },
+  { name:'Pinwheel Array', phase:3, spawns:[{t:'Pinwheel',n:10,d:0,s:0.35},{t:'Wanderer',n:10,d:2,s:0.3}] },
+  { name:'Bloom Tsunami',  phase:3, spawns:[{t:'Bloomer',n:8,d:0,s:0.35,sz:'large'}] },
+  { name:'Viper Nest',     phase:3, spawns:[{t:'Snake',n:16,d:0,s:0.25}] },
+  { name:'All Hands',      phase:3, spawns:[{t:'Grunt',n:10,d:0,s:0.28},{t:'Wanderer',n:8,d:1.5,s:0.3},{t:'Pinwheel',n:6,d:3,s:0.4},{t:'Snake',n:6,d:4.5,s:0.35},{t:'Bloomer',n:4,d:6,s:0.55,sz:'large'}] },
+  { name:'Delta Gauntlet', phase:3, spawns:[{t:'Grunt',n:20,d:0,s:0.2},{t:'Wanderer',n:12,d:2,s:0.25},{t:'Pinwheel',n:8,d:4,s:0.35},{t:'Snake',n:10,d:6,s:0.28},{t:'Bloomer',n:6,d:8,s:0.5,sz:'large'}] },
+  // Phase 4 - SECTOR OMEGA (indices 24-29)
+  { name:'Omega Rush',     phase:4, spawns:[{t:'Grunt',n:30,d:0,s:0.12},{t:'Wanderer',n:10,d:1,s:0.22}] },
+  { name:'Pinwheel Hell',  phase:4, spawns:[{t:'Pinwheel',n:15,d:0,s:0.28}] },
+  { name:'Fractal Bloom',  phase:4, spawns:[{t:'Bloomer',n:10,d:0,s:0.3,sz:'large'}] },
+  { name:'Serpent God',    phase:4, spawns:[{t:'Snake',n:20,d:0,s:0.2},{t:'Pinwheel',n:10,d:3,s:0.3}] },
+  { name:'Total War',      phase:4, spawns:[{t:'Grunt',n:20,d:0,s:0.18},{t:'Wanderer',n:12,d:2,s:0.22},{t:'Pinwheel',n:10,d:4,s:0.3},{t:'Snake',n:12,d:6,s:0.22},{t:'Bloomer',n:8,d:8.5,s:0.4,sz:'large'}] },
+  { name:'OMEGA FINALE',   phase:4, spawns:[{t:'Grunt',n:25,d:0,s:0.15},{t:'Wanderer',n:15,d:1.5,s:0.2},{t:'Pinwheel',n:12,d:3.5,s:0.28},{t:'Snake',n:15,d:6,s:0.2},{t:'Bloomer',n:10,d:9,s:0.35,sz:'large'}] },
+];
+
+function getLevelData(idx) {
+  if (idx < 30) return LEVELS_DATA[idx];
+  const n = idx - 29; // 1, 2, 3, ...
+  return {
+    name: `ENDLESS ${n}`,
+    phase: 4,
+    spawns: [
+      { t:'Grunt',    n: Math.min(8 + n*3, 50),             d:0,   s:0.15 },
+      { t:'Wanderer', n: Math.min(n*2, 18),                  d:1,   s:0.25 },
+      { t:'Pinwheel', n: Math.min(Math.floor(n/2), 12),      d:2.5, s:0.3  },
+      { t:'Snake',    n: Math.min(Math.floor(n/2), 14),      d:4,   s:0.25 },
+      { t:'Bloomer',  n: Math.min(Math.floor(n/3), 10),      d:6,   s:0.45, sz:'large' },
+    ]
+  };
+}
+
+function createEnemy(type, x, y, sz) {
+  switch(type) {
+    case 'Grunt':    return new Grunt(x, y);
+    case 'Wanderer': return new Wanderer(x, y);
+    case 'Pinwheel': return new Pinwheel(x, y);
+    case 'Snake':    return new Snake(x, y);
+    case 'Bloomer':  return new Bloomer(x, y, sz || 'large');
+    default: return new Grunt(x, y);
+  }
+}
+
+class WaveSpawner {
+  constructor(levelIdx, W, H) {
+    this.data = getLevelData(levelIdx);
+    this.queue = [];
+    this.elapsed = 0;
+    this.done = false;
+
+    const edgePos = () => {
+      const side = randInt(0, 3);
+      switch (side) {
+        case 0: return new Vec2(rand(30, W - 30), 30);
+        case 1: return new Vec2(W - 30, rand(30, H - 30));
+        case 2: return new Vec2(rand(30, W - 30), H - 30);
+        case 3: return new Vec2(30, rand(30, H - 30));
+      }
+    };
+
+    for (const g of this.data.spawns) {
+      for (let i = 0; i < g.n; i++) {
+        const delay = g.d + i * g.s;
+        const pos = edgePos();
+        this.queue.push({ delay, create: () => createEnemy(g.t, pos.x, pos.y, g.sz) });
+      }
+    }
+
+    this.queue.sort((a, b) => a.delay - b.delay);
+  }
+
+  update(dt) {
+    this.elapsed += dt;
+    const spawned = [];
+    while (this.queue.length > 0 && this.queue[0].delay <= this.elapsed) {
+      const entry = this.queue.shift();
+      spawned.push(entry.create());
+    }
+    if (this.queue.length === 0) {
+      this.done = true;
+    }
+    return spawned;
+  }
+
+  get totalCount() {
+    return this.data.spawns.reduce((s, g) => s + g.n, 0);
+  }
+}
+
+class ProfileManager {
+  constructor() {
+    this.profiles = [null, null, null];
+    this.active = 0;
+    this.load();
+  }
+
+  _default(i) {
+    return {
+      name: `PLAYER ${i + 1}`,
+      highScore: 0,
+      highestLevel: 0,
+      totalKills: 0,
+      totalGamesPlayed: 0,
+      lastPlayed: 0,
+      unlockedPhases: [true, false, false, false, false],
+    };
+  }
+
+  load() {
+    for (let i = 0; i < 3; i++) {
+      try {
+        const raw = localStorage.getItem(`gw_profile_${i}`);
+        this.profiles[i] = raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        this.profiles[i] = null;
+      }
+    }
+  }
+
+  save(i) {
+    try {
+      localStorage.setItem(`gw_profile_${i}`, JSON.stringify(this.profiles[i]));
+    } catch (e) {
+      // silently fail if localStorage is unavailable
+    }
+  }
+
+  get(i) {
+    return this.profiles[i];
+  }
+
+  create(i) {
+    this.profiles[i] = this._default(i);
+    this.save(i);
+    return this.profiles[i];
+  }
+
+  getOrCreate(i) {
+    return this.profiles[i] || this.create(i);
+  }
+
+  update(i, updates) {
+    if (this.profiles[i]) {
+      Object.assign(this.profiles[i], updates);
+      this.save(i);
+    }
+  }
+
+  getActive() {
+    return this.profiles[this.active];
+  }
+
+  firstUnlockedPhase(i) {
+    const p = this.profiles[i];
+    if (!p) return 0;
+    let highest = 0;
+    for (let ph = 0; ph < p.unlockedPhases.length; ph++) {
+      if (p.unlockedPhases[ph] === true) {
+        highest = ph;
+      }
+    }
+    return highest;
+  }
+
+  startLevelForPhase(phaseIdx) {
+    return PHASES_DATA[phaseIdx].start;
+  }
+}
+// =============================================================================
+// Game — main game controller
+// =============================================================================
+class Game {
+  constructor() {
+    this.canvas = document.getElementById('c');
+    this.ctx = this.canvas.getContext('2d');
+    this.nameInput = document.getElementById('nameInput');
+
+    this.audio = new AudioManager();
+    this.input = new InputManager(this.canvas);
+    this.particles = new ParticleSystem();
+    this.grid = new Grid(44);
+    this.profiles = new ProfileManager();
+
+    // State machine
+    this.state = 'profile_select'; // profile_select | phase_select | menu | playing | level_clear | phase_clear | gameover
+
+    // Game state
+    this.score = 0;
+    this.lives = 3;
+    this.multiplier = 1;
+    this.multKills = 0;
+    this.multTimer = 0;
+    this.currentLevelIdx = 0;
+
+    // Timers
+    this.levelClearTimer = 0;
+    this.phaseClearTimer = 0;
+    this.stateTimer = 0;
+
+    // Entities
+    this.player = null;
+    this.enemies = [];
+    this.bullets = [];       // player bullets
+    this.enemyBullets = [];
+    this.spawner = null;
+
+    // Rendering
+    this.screenShake = 0;
+    this.frameCount = 0;
+    this.lastTime = 0;
+
+    // UI
+    this.clickZones = [];   // rebuilt each frame: [{x,y,w,h,action,longPress?,slot?}]
+    this.pressStart = 0;
+    this.pressSlot = -1;
+    this._longPressHandled = false;
+    this.renamingSlot = -1;
+
+    // Level clear state
+    this.bonusAwarded = 0;
+    this.isPhaseEnd = false;
+    this.phaseClearPhase = 0;
+    this.isNewBest = false;
+
+    this._setupEvents();
+    this.resize();
+    window.addEventListener('resize', () => this.resize());
+    requestAnimationFrame(t => { this.lastTime = t; this.loop(t); });
+  }
+
+  _setupEvents() {
+    // Single click handler — never re-registered
+    this.canvas.addEventListener('click', e => this._onClick(e));
+
+    // Long-press for profile rename (500ms hold)
+    this.canvas.addEventListener('pointerdown', e => {
+      this.pressStart = performance.now();
+      this.pressSlot = -1;
+      this._longPressHandled = false;
+      const pos = this._canvasPos(e);
+      for (const zone of this.clickZones) {
+        if (zone.longPress && this._inZone(pos, zone)) {
+          this.pressSlot = zone.slot;
+          break;
+        }
+      }
+    });
+
+    this.canvas.addEventListener('pointermove', () => {
+      this.pressSlot = -1;
+    });
+
+    this.canvas.addEventListener('pointerup', e => {
+      const held = performance.now() - this.pressStart;
+      if (held >= 480 && this.pressSlot >= 0 && this.state === 'profile_select') {
+        this._longPressHandled = true;
+        this._startRename(this.pressSlot);
+      }
+      this.pressSlot = -1;
+    });
+
+    // Name input confirm
+    this.nameInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') this._confirmRename();
+    });
+    this.nameInput.addEventListener('blur', () => {
+      if (this.renamingSlot >= 0) this._confirmRename();
+    });
+  }
+
+  _canvasPos(e) {
+    const r = this.canvas.getBoundingClientRect();
+    const scaleX = this.canvas.width / r.width;
+    const scaleY = this.canvas.height / r.height;
+    return {
+      x: (e.clientX - r.left) * scaleX,
+      y: (e.clientY - r.top) * scaleY
+    };
+  }
+
+  _inZone(pos, z) {
+    return pos.x >= z.x && pos.x <= z.x + z.w && pos.y >= z.y && pos.y <= z.y + z.h;
+  }
+
+  _onClick(e) {
+    if (this._longPressHandled) {
+      this._longPressHandled = false;
+      return;
+    }
+    if (this.renamingSlot >= 0) return;
+    this.audio.resume();
+    const pos = this._canvasPos(e);
+    for (const zone of this.clickZones) {
+      if (!zone.longPress && this._inZone(pos, zone)) {
+        zone.action();
+        return;
+      }
+    }
+  }
+
+  _addZone(x, y, w, h, action, longPress = false, slot = -1) {
+    this.clickZones.push({ x, y, w, h, action, longPress, slot });
+  }
+
+  _startRename(slot) {
+    this.renamingSlot = slot;
+    this.profiles.getOrCreate(slot);
+    this.nameInput.style.display = 'block';
+    this.nameInput.value = this.profiles.get(slot).name;
+    this.nameInput.focus();
+    this.nameInput.select();
+  }
+
+  _confirmRename() {
+    const slot = this.renamingSlot;
+    this.renamingSlot = -1;
+    this.nameInput.style.display = 'none';
+    if (slot < 0) return;
+    const name = this.nameInput.value.trim().toUpperCase().substring(0, 12) || `PLAYER ${slot + 1}`;
+    this.profiles.update(slot, { name });
+  }
+
+  resize() {
+    this.W = this.canvas.width = window.innerWidth;
+    this.H = this.canvas.height = window.innerHeight;
+    this.grid.resize(this.W, this.H);
+  }
+
+  setState(s) {
+    this.state = s;
+    this.stateTimer = 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Game flow methods
+  // ---------------------------------------------------------------------------
+
+  startGame(levelIdx) {
+    // Reset
+    this.score = 0;
+    this.lives = 3;
+    this.multiplier = 1;
+    this.multKills = 0;
+    this.multTimer = 0;
+
+    // Clear
+    this.enemies = [];
+    this.bullets = [];
+    this.enemyBullets = [];
+    this.particles.clear();
+
+    this.player = new Player(this.W / 2, this.H / 2);
+
+    // Update profile
+    const prof = this.profiles.getActive();
+    if (prof) {
+      this.profiles.update(this.profiles.active, {
+        totalGamesPlayed: (prof.totalGamesPlayed || 0) + 1,
+        lastPlayed: Date.now()
+      });
+    }
+
+    this.startLevel(levelIdx);
+  }
+
+  startLevel(idx) {
+    this.currentLevelIdx = idx;
+    this.enemies = [];
+    this.bullets = [];
+    this.enemyBullets = [];
+    this.spawner = new WaveSpawner(idx, this.W, this.H);
+    this.setState('playing');
+  }
+
+  killPlayer() {
+    if (this.player && this.player.invincible > 0) return;
+    this.audio.die();
+    this._explode(this.player.pos.x, this.player.pos.y, '#00ffff', 40, 300);
+    this.screenShake = 0.9;
+    this.lives--;
+    if (this.lives <= 0) {
+      this._gameOver();
+    } else {
+      this.player.pos.set(this.W / 2, this.H / 2);
+      this.player.vel.set(0, 0);
+      this.player.invincible = 2.5;
+      this.bullets = [];
+    }
+  }
+
+  _gameOver() {
+    const prof = this.profiles.getActive();
+    const oldHighScore = prof ? (prof.highScore || 0) : 0;
+    const oldHighestLevel = prof ? (prof.highestLevel || 0) : 0;
+    this.isNewBest = this.score > oldHighScore;
+
+    if (prof) {
+      this.profiles.update(this.profiles.active, {
+        highScore: Math.max(oldHighScore, this.score),
+        highestLevel: Math.max(oldHighestLevel, this.currentLevelIdx)
+      });
+    }
+
+    this.setState('gameover');
+  }
+
+  _levelClear() {
+    const bonus = this.lives * 1000;
+    this.score += bonus;
+    this.bonusAwarded = bonus;
+    this.audio.levelUp();
+
+    // Save progress
+    const prof = this.profiles.getActive();
+    const oldHighScore = prof ? (prof.highScore || 0) : 0;
+    const oldHighestLevel = prof ? (prof.highestLevel || 0) : 0;
+    if (prof) {
+      this.profiles.update(this.profiles.active, {
+        highestLevel: Math.max(oldHighestLevel, this.currentLevelIdx + 1),
+        highScore: Math.max(oldHighScore, this.score)
+      });
+    }
+
+    // Check if this is the last level of a phase
+    const safeLevelIdx = Math.min(this.currentLevelIdx, 29);
+    const curPhase = LEVELS_DATA[safeLevelIdx].phase;
+    const phaseEnd = PHASES_DATA[curPhase].end;
+
+    if (this.currentLevelIdx === phaseEnd && curPhase < 4) {
+      // Unlock next phase in profile
+      const activeProfData = this.profiles.getActive();
+      if (activeProfData) {
+        const newUnlocked = [...(activeProfData.unlockedPhases || [true, false, false, false, false])];
+        newUnlocked[curPhase + 1] = true;
+        this.profiles.update(this.profiles.active, { unlockedPhases: newUnlocked });
+      }
+      this.isPhaseEnd = true;
+      this.phaseClearPhase = curPhase;
+      this.levelClearTimer = 3.0;
+      this.setState('level_clear');
+      return;
+    }
+
+    this.isPhaseEnd = false;
+    this.levelClearTimer = 3.0;
+    this.setState('level_clear');
+  }
+
+  _explode(x, y, color, n, spd) {
+    this.particles.emit(x, y, color, n, spd, 2, 5, 0.3, 0.8);
+    // Shockwave: 6 directions, 3 particles each
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const bv = Vec2.fromAngle(a, spd * 0.6);
+      this.particles.emit(
+        x + bv.x * 0.1, y + bv.y * 0.1,
+        color, 3, spd * 0.55,
+        1, 3, 0.2, 0.5
+      );
+    }
+  }
+
+  addMultiplier() {
+    this.multKills++;
+    this.multTimer = 3.0;
+    if (this.multKills >= 10) {
+      this.multiplier = Math.min(20, this.multiplier + 1);
+      this.multKills = 0;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // update(dt)
+  // ---------------------------------------------------------------------------
+
+  update(dt) {
+    this.frameCount++;
+
+    if (this.state === 'playing') {
+      this.input.update(this.player ? this.player.pos : null);
+      this._updateGame(dt);
+    } else if (this.state === 'level_clear') {
+      this.levelClearTimer -= dt;
+      if (this.levelClearTimer <= 0) {
+        if (this.isPhaseEnd) {
+          this.phaseClearTimer = 5.0;
+          this.setState('phase_clear');
+        } else {
+          this.startLevel(this.currentLevelIdx + 1);
+        }
+      }
+    } else if (this.state === 'phase_clear') {
+      this.phaseClearTimer -= dt;
+      if (this.phaseClearTimer <= 0) {
+        const nextPhase = this.phaseClearPhase + 1;
+        if (nextPhase >= 5) {
+          this.startLevel(30); // endless mode
+        } else {
+          this.startLevel(PHASES_DATA[nextPhase].start);
+        }
+      }
+    }
+
+    this.particles.update(dt);
+    this.screenShake *= Math.pow(0.04, dt);
+    this.stateTimer += dt;
+  }
+
+  _updateGame(dt) {
+    // Multiplier decay
+    if (this.multTimer > 0) {
+      this.multTimer -= dt;
+      if (this.multTimer <= 0 && this.multiplier > 1) {
+        this.multiplier = 1;
+        this.multKills = 0;
+      }
+    }
+
+    // Player
+    if (this.player) {
+      this.player.update(dt, this.input, this.W, this.H);
+    }
+
+    // Fire
+    if (this.player && this.input.shooting && this.input.right.len() > 0.1 && this.player.canFire()) {
+      this.bullets.push(this.player.fire(this.input.right));
+      this.audio.shoot();
+    }
+
+    // Player bullets update
+    for (let i = this.bullets.length - 1; i >= 0; i--) {
+      this.bullets[i].update(dt, this.W, this.H);
+      if (this.bullets[i].dead) {
+        this.bullets.splice(i, 1);
+      }
+    }
+
+    // Enemy bullets update + player collision
+    for (let i = this.enemyBullets.length - 1; i >= 0; i--) {
+      const eb = this.enemyBullets[i];
+      eb.update(dt, this.W, this.H);
+      if (eb.dead) {
+        this.enemyBullets.splice(i, 1);
+      } else if (this.player && eb.pos.distTo(this.player.pos) < this.player.size + 3) {
+        this.enemyBullets.splice(i, 1);
+        this.killPlayer();
+      }
+    }
+
+    // Spawner
+    if (this.spawner) {
+      const newEnemies = this.spawner.update(dt);
+      for (const e of newEnemies) {
+        this.enemies.push(e);
+      }
+    }
+
+    // Enemies
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      const e = this.enemies[i];
+      e.update(dt, this.player ? this.player.pos : new Vec2(this.W / 2, this.H / 2), this.W, this.H);
+
+      // Flush pinwheel bullets
+      if (e.pendingBullets && e.pendingBullets.length > 0) {
+        for (const b of e.pendingBullets) {
+          this.enemyBullets.push(b);
+        }
+        e.pendingBullets = [];
+      }
+
+      // Collision with player
+      if (this.player && e.collides(this.player.pos, this.player.size)) {
+        this.killPlayer();
+      }
+
+      // Collision with player bullets
+      let enemyKilled = false;
+      for (let j = this.bullets.length - 1; j >= 0; j--) {
+        const b = this.bullets[j];
+        if (b.pos.distTo(e.pos) < e.size + 4) {
+          b.dead = true;
+          const killed = e.hit();
+          if (killed) {
+            this.score += e.score * this.multiplier;
+            this.addMultiplier();
+
+            // Update profile kills
+            const prof = this.profiles.getActive();
+            if (prof) {
+              this.profiles.update(this.profiles.active, {
+                totalKills: (prof.totalKills || 0) + 1
+              });
+            }
+
+            this.audio.explode(e.size / 14);
+            this._explode(e.pos.x, e.pos.y, e.color, 18, 210);
+            this.screenShake = Math.min(this.screenShake + 0.12, 0.45);
+
+            // Spawn children (e.g. Bloomer splits)
+            if (e.pendingSpawns && e.pendingSpawns.length > 0) {
+              for (const spawn of e.pendingSpawns) {
+                this.enemies.push(spawn);
+              }
+            }
+
+            this.enemies.splice(i, 1);
+            enemyKilled = true;
+          } else {
+            this._explode(e.pos.x, e.pos.y, '#ffffff', 5, 80);
+          }
+          break;
+        }
+      }
+
+      if (enemyKilled) continue;
+    }
+
+    // Level complete check
+    if (this.spawner && this.spawner.done && this.enemies.length === 0) {
+      this._levelClear();
+    }
+
+    // Grid
+    const gridEnts = [
+      ...(this.player ? [this.player] : []),
+      ...this.bullets.slice(0, 15),
+      ...this.enemies.slice(0, 15)
+    ];
+    this.grid.update(dt, gridEnts);
+  }
+
+  // ---------------------------------------------------------------------------
+  // draw()
+  // ---------------------------------------------------------------------------
+
+  draw() {
+    const { ctx, W, H } = this;
+    this.clickZones = [];
+
+    ctx.save();
+
+    // Screen shake
+    if (this.screenShake > 0.01) {
+      const mag = this.screenShake * 12;
+      ctx.translate(
+        (Math.random() * 2 - 1) * mag,
+        (Math.random() * 2 - 1) * mag
+      );
+    }
+
+    // Background
+    ctx.fillStyle = '#000008';
+    ctx.fillRect(0, 0, W, H);
+    this.grid.draw(ctx);
+
+    switch (this.state) {
+      case 'profile_select': this._drawProfileSelect(ctx); break;
+      case 'phase_select':   this._drawPhaseSelect(ctx);   break;
+      case 'menu':           this._drawMenu(ctx);           break;
+      case 'playing':        this._drawPlaying(ctx);        break;
+      case 'level_clear':
+        this._drawPlaying(ctx);
+        this._drawLevelClear(ctx);
+        break;
+      case 'phase_clear':    this._drawPhaseClear(ctx);    break;
+      case 'gameover':       this._drawGameOver(ctx);       break;
+    }
+
+    ctx.restore();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Drawing helpers
+  // ---------------------------------------------------------------------------
+
+  _neonText(ctx, text, x, y, color, size, align = 'center') {
+    ctx.save();
+    ctx.font = `bold ${size}px "Courier New", monospace`;
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = size * 0.6;
+    ctx.textAlign = align;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, y);
+    ctx.restore();
+  }
+
+  _neonRect(ctx, x, y, w, h, color) {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color + '22';
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 12;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, w, h);
+    ctx.fillRect(x, y, w, h);
+    ctx.restore();
+  }
+
+  _button(ctx, text, x, y, w, h, color, action) {
+    this._neonRect(ctx, x, y, w, h, color);
+    this._neonText(ctx, text, x + w / 2, y + h / 2, color, Math.min(h * 0.42, 20));
+    this._addZone(x, y, w, h, action);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Screen drawing methods
+  // ---------------------------------------------------------------------------
+
+  _drawProfileSelect(ctx) {
+    const { W, H } = this;
+
+    // Title
+    this._neonText(ctx, 'GEOMETRY WARS', W / 2, H * 0.12, '#00ffff', 34);
+    this._neonText(ctx, 'SELECT PROFILE', W / 2, H * 0.12 + 48, '#8888ff', 18);
+    this._neonText(ctx, 'HOLD CARD TO RENAME', W / 2, H * 0.12 + 78, '#445566', 12);
+
+    const cardW = Math.min(W * 0.8, 380);
+    const cardH = 90;
+    const cardX = W / 2 - cardW / 2;
+    const startY = H * 0.3;
+    const gap = 108;
+
+    for (let i = 0; i < 3; i++) {
+      const cy = startY + i * gap;
+      const isActive = (i === this.profiles.active);
+      const color = isActive ? '#00ffff' : '#446688';
+      const prof = this.profiles.get(i);
+
+      this._neonRect(ctx, cardX, cy, cardW, cardH, color);
+
+      if (prof) {
+        // Profile name
+        this._neonText(ctx, prof.name, cardX + 18, cy + 26, color, 17, 'left');
+        // Stats
+        const statsStr = `HI: ${prof.highScore || 0}  |  LEVEL: ${(prof.highestLevel || 0) + 1}  |  KILLS: ${prof.totalKills || 0}`;
+        this._neonText(ctx, statsStr, cardX + 18, cy + 58, '#667799', 11, 'left');
+      } else {
+        this._neonText(ctx, `SLOT ${i + 1} — EMPTY`, cardX + 18, cy + 26, '#446688', 15, 'left');
+        this._neonText(ctx, 'TAP TO CREATE  |  HOLD TO RENAME', cardX + 18, cy + 58, '#334455', 11, 'left');
+      }
+
+      // Regular click: select profile
+      const slotIdx = i;
+      this._addZone(cardX, cy, cardW, cardH, () => {
+        this.profiles.active = slotIdx;
+        this.profiles.getOrCreate(slotIdx);
+        this.setState('menu');
+      });
+
+      // Long-press zone
+      this._addZone(cardX, cy, cardW, cardH, () => {}, true, i);
+    }
+  }
+
+  _drawPhaseSelect(ctx) {
+    const { W, H } = this;
+
+    this._neonText(ctx, 'SELECT PHASE', W / 2, H * 0.1, '#00ffff', 26);
+    const activeProf = this.profiles.getActive();
+    const profName = activeProf ? activeProf.name : 'PLAYER';
+    this._neonText(ctx, profName, W / 2, H * 0.1 + 36, '#8888ff', 14);
+
+    const tileW = Math.min(W * 0.85, 360);
+    const tileH = 68;
+    const tileX = W / 2 - tileW / 2;
+    const startY = H * 0.24;
+    const gap = 80;
+
+    for (let ph = 0; ph < 5; ph++) {
+      const pd = PHASES_DATA[ph];
+      const cy = startY + ph * gap;
+      const unlockedPhases = activeProf ? activeProf.unlockedPhases : [true, false, false, false, false];
+      const unlocked = unlockedPhases ? (unlockedPhases[ph] || ph === 0) : (ph === 0);
+
+      if (unlocked) {
+        this._neonRect(ctx, tileX, cy, tileW, tileH, pd.color);
+        this._neonText(ctx, pd.name, tileX + 14, cy + 22, pd.color, 16, 'left');
+        const startLvl = pd.start + 1;
+        const endLvl = pd.end + 1;
+        this._neonText(ctx, `LEVELS ${startLvl}–${endLvl}`, tileX + 14, cy + 50, pd.color + 'aa', 12, 'left');
+
+        const phIdx = ph;
+        this._addZone(tileX, cy, tileW, tileH, () => {
+          this.startGame(PHASES_DATA[phIdx].start);
+        });
+      } else {
+        // Locked
+        ctx.save();
+        ctx.strokeStyle = '#334455';
+        ctx.fillStyle = '#222233';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(tileX, cy, tileW, tileH);
+        ctx.fillRect(tileX, cy, tileW, tileH);
+        ctx.restore();
+
+        this._neonText(ctx, `${pd.name}  [LOCKED]`, tileX + 14, cy + 22, '#445566', 14, 'left');
+        const prevPhase = PHASES_DATA[ph - 1];
+        this._neonText(ctx, `Clear ${prevPhase ? prevPhase.name : ''} to unlock`, tileX + 14, cy + 50, '#334455', 11, 'left');
+      }
+    }
+
+    // Back button
+    const btnW = 160;
+    const btnH = 44;
+    this._button(ctx, 'BACK', W / 2 - btnW / 2, H - 80, btnW, btnH, '#446688', () => {
+      this.setState('menu');
+    });
+  }
+
+  _drawMenu(ctx) {
+    const { W, H } = this;
+    const pulse = 0.9 + 0.1 * Math.sin(this.stateTimer * 2);
+
+    ctx.save();
+    ctx.globalAlpha = pulse;
+    this._neonText(ctx, 'GEOMETRY WARS', W / 2, H * 0.2, '#00ffff', 36);
+    ctx.restore();
+
+    this._neonText(ctx, 'MOBILE EDITION', W / 2, H * 0.3, '#6666cc', 16);
+
+    const activeProf = this.profiles.getActive();
+    if (activeProf) {
+      this._neonText(ctx, activeProf.name, W / 2, H * 0.42, '#00ffff', 15);
+      this._neonText(ctx, `HI: ${activeProf.highScore || 0}  |  KILLS: ${activeProf.totalKills || 0}`, W / 2, H * 0.47, '#667799', 12);
+    }
+
+    const btnW = Math.min(W * 0.6, 280);
+    const btnH = 52;
+    const btnX = W / 2 - btnW / 2;
+
+    // PLAY button: start from beginning of highest unlocked phase
+    const highestPhase = activeProf ? this.profiles.firstUnlockedPhase(this.profiles.active) : 0;
+    this._button(ctx, 'PLAY', btnX, H * 0.58, btnW, btnH, '#00ffff', () => {
+      this.startGame(PHASES_DATA[highestPhase].start);
+    });
+
+    this._button(ctx, 'LEVEL SELECT', btnX, H * 0.68, btnW, btnH, '#44ff88', () => {
+      this.setState('phase_select');
+    });
+
+    this._button(ctx, 'CHANGE PROFILE', btnX, H * 0.77, btnW, btnH, '#8888ff', () => {
+      this.setState('profile_select');
+    });
+
+    // Controls hint
+    this._neonText(ctx, 'WASD / LEFT STICK: MOVE   ·   IJKL / RIGHT STICK / MOUSE: SHOOT', W / 2, H - 24, '#334455', 11);
+  }
+
+  _drawPlaying(ctx) {
+    const { W, H } = this;
+
+    this.particles.draw(ctx);
+
+    // Enemy bullets
+    for (const b of this.enemyBullets) {
+      ctx.save();
+      ctx.fillStyle = '#ff44ff';
+      ctx.shadowColor = '#ff44ff';
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.arc(b.pos.x, b.pos.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Player bullets
+    for (const b of this.bullets) {
+      b.draw(ctx);
+    }
+
+    // Enemies
+    for (const e of this.enemies) {
+      e.draw(ctx);
+    }
+
+    // Player
+    if (this.player) {
+      this.player.draw(ctx, this.frameCount % 5 < 2);
+    }
+
+    this._drawHUD(ctx);
+    this._drawJoysticks(ctx);
+
+    // Wave intro text (fade in/out during first 1.8s of spawner)
+    if (this.spawner && this.spawner.elapsed < 1.8) {
+      const ld = getLevelData(this.currentLevelIdx);
+      const alpha = Math.sin((this.spawner.elapsed / 1.8) * Math.PI);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      this._neonText(ctx, `LEVEL ${this.currentLevelIdx + 1}`, W / 2, H / 2 - 30, '#ffffff', 30);
+      this._neonText(ctx, ld.name, W / 2, H / 2 + 14, '#aaaaff', 18);
+      ctx.restore();
+    }
+  }
+
+  _drawHUD(ctx) {
+    const { W, H } = this;
+
+    // Score (top-left)
+    this._neonText(ctx, String(this.score), 20, 28, '#ffffff', 24, 'left');
+
+    // Hi score below
+    const activeProf = this.profiles.getActive();
+    if (activeProf) {
+      this._neonText(ctx, `HI ${activeProf.highScore || 0}`, 20, 52, '#8888ff', 13, 'left');
+    }
+
+    // Multiplier (top-center)
+    if (this.multiplier > 1 || this.multKills > 0) {
+      this._neonText(ctx, `×${this.multiplier}`, W / 2, 26, '#ffff00', 22);
+
+      // Progress bar
+      const bw = 90;
+      const bh = 4;
+      const bx = W / 2 - 45;
+      const by = 40;
+      const fill = this.multKills / 10;
+
+      ctx.save();
+      ctx.fillStyle = '#333300';
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.fillStyle = '#ffff00';
+      ctx.shadowColor = '#ff8800';
+      ctx.shadowBlur = 8;
+      ctx.fillRect(bx, by, bw * fill, bh);
+      ctx.restore();
+    }
+
+    // Lives (top-right): mini ship icons
+    for (let i = 0; i < this.lives; i++) {
+      const sx = W - 20 - i * 28;
+      const sy = 28;
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(-Math.PI / 2);
+      ctx.shadowColor = '#00ffff';
+      ctx.shadowBlur = 10;
+      ctx.strokeStyle = '#00ffff';
+      ctx.fillStyle = 'rgba(0,220,255,0.15)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(9, 0);
+      ctx.lineTo(-6, -6);
+      ctx.lineTo(-3, 0);
+      ctx.lineTo(-6, 6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Level + phase name (top-right, below lives)
+    const ld = getLevelData(this.currentLevelIdx);
+    const phData = PHASES_DATA[Math.min(ld.phase, 4)];
+    this._neonText(ctx, `LVL ${this.currentLevelIdx + 1} · ${phData.name}`, W - 16, 56, phData.color, 12, 'right');
+  }
+
+  _drawJoysticks(ctx) {
+    const MAX = 65;
+
+    const drawStick = (stick) => {
+      if (!stick) return;
+      const { origin, pos } = stick;
+
+      ctx.save();
+
+      // Outer ring
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+      ctx.fillStyle = 'rgba(255,255,255,0.04)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(origin.x, origin.y, MAX, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Thumb
+      const dx = clamp(pos.x - origin.x, -MAX, MAX);
+      const dy = clamp(pos.y - origin.y, -MAX, MAX);
+      const len = Math.sqrt(dx * dx + dy * dy);
+      let tx, ty;
+      if (len > MAX) {
+        tx = origin.x + (dx / len) * MAX;
+        ty = origin.y + (dy / len) * MAX;
+      } else {
+        tx = pos.x;
+        ty = pos.y;
+      }
+
+      ctx.fillStyle = 'rgba(255,255,255,0.22)';
+      ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+      ctx.beginPath();
+      ctx.arc(tx, ty, 26, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.restore();
+    };
+
+    drawStick(this.input.getLeftStick());
+    drawStick(this.input.getRightStick());
+  }
+
+  _drawLevelClear(ctx) {
+    const { W, H } = this;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 0, W, H);
+
+    this._neonText(ctx, `LEVEL ${this.currentLevelIdx + 1} CLEAR!`, W / 2, H / 2 - 50, '#00ff88', 34);
+    this._neonText(ctx, `BONUS +${this.bonusAwarded}`, W / 2, H / 2, '#ffff44', 22);
+    this._neonText(ctx, `SCORE: ${this.score}`, W / 2, H / 2 + 44, '#ffffff', 18);
+    this._neonText(ctx, `NEXT IN ${Math.ceil(this.levelClearTimer)}…`, W / 2, H / 2 + 80, '#666688', 15);
+  }
+
+  _drawPhaseClear(ctx) {
+    const { W, H } = this;
+    const ph = PHASES_DATA[this.phaseClearPhase];
+    const pulse = 0.85 + 0.15 * Math.sin(this.stateTimer * 3);
+
+    ctx.save();
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 0, W, H);
+    this._neonText(ctx, 'PHASE COMPLETE!', W / 2, H / 2 - 80, ph.color, 36);
+    this._neonText(ctx, ph.name, W / 2, H / 2 - 30, ph.color, 26);
+    ctx.globalAlpha = 1;
+    this._neonText(ctx, `SCORE: ${this.score}`, W / 2, H / 2 + 30, '#ffffff', 22);
+
+    if (this.phaseClearPhase + 1 < 5) {
+      const next = PHASES_DATA[this.phaseClearPhase + 1];
+      this._neonText(ctx, `UNLOCKED: ${next.name}`, W / 2, H / 2 + 70, next.color, 17);
+    }
+
+    this._neonText(ctx, `CONTINUING IN ${Math.ceil(this.phaseClearTimer)}…`, W / 2, H / 2 + 110, '#555577', 14);
+    ctx.restore();
+  }
+
+  _drawGameOver(ctx) {
+    const { W, H } = this;
+
+    ctx.fillStyle = 'rgba(0,0,8,0.72)';
+    ctx.fillRect(0, 0, W, H);
+
+    this._neonText(ctx, 'GAME OVER', W / 2, H * 0.22, '#ff3333', 44);
+    this._neonText(ctx, `SCORE: ${this.score}`, W / 2, H * 0.35, '#ffffff', 24);
+    this._neonText(ctx, `LEVEL: ${this.currentLevelIdx + 1}`, W / 2, H * 0.43, '#aaaaff', 18);
+
+    if (this.isNewBest) {
+      const pulseAlpha = 0.6 + 0.4 * Math.abs(Math.sin(this.stateTimer * 4));
+      ctx.save();
+      ctx.globalAlpha = pulseAlpha;
+      this._neonText(ctx, 'NEW BEST!', W / 2, H * 0.51, '#ffff00', 22);
+      ctx.restore();
+    }
+
+    const btnW = Math.min(W * 0.55, 260);
+    const btnH = 50;
+    const btnX = W / 2 - btnW / 2;
+
+    const activeProf = this.profiles.getActive();
+    const firstUnlocked = activeProf ? this.profiles.firstUnlockedPhase(this.profiles.active) : 0;
+
+    this._button(ctx, 'PLAY AGAIN', btnX, H * 0.62, btnW, btnH, '#00ffff', () => {
+      this.startGame(PHASES_DATA[firstUnlocked].start);
+    });
+
+    this._button(ctx, 'MAIN MENU', btnX, H * 0.72, btnW, btnH, '#8888ff', () => {
+      this.setState('menu');
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // loop(ts)
+  // ---------------------------------------------------------------------------
+
+  loop(ts) {
+    const dt = Math.min((ts - this.lastTime) / 1000, 0.05);
+    this.lastTime = ts;
+    this.update(dt);
+    this.draw();
+    requestAnimationFrame(t => this.loop(t));
+  }
+}
+
+// =============================================================================
+// Initialization
+// =============================================================================
+window.addEventListener('DOMContentLoaded', () => new Game());
+
+</script>
+</body>
+</html>
