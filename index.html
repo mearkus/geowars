@@ -2379,7 +2379,7 @@ class Game {
     // Dynamic button height + positions that can't overlap regardless of orientation
     const btnH = Math.min(52, Math.max(36, H * 0.1));
     const btnGap = Math.max(6, H * 0.018);
-    const totalBtnsH = 5 * btnH + 4 * btnGap;
+    const totalBtnsH = 6 * btnH + 5 * btnGap;
     const btnsStartY = Math.min(H * 0.54, H * 0.96 - totalBtnsH);
     const btnX = W / 2 - btnW / 2;
 
@@ -2409,9 +2409,10 @@ class Game {
       this._startRename();
     });
 
-    // Sign out hint + clickable zone
-    this._neonText(ctx, `${activeProf ? activeProf.name : ''}  ·  SIGN OUT`, W / 2, H - 14, '#334455', 10);
-    this._addZone(W / 2 + 20, H - 26, 100, 20, () => this._doSignOut());
+    // SIGN OUT button (6th)
+    this._button(ctx, 'SIGN OUT', btnX, btnsStartY + 5 * (btnH + btnGap), btnW, btnH, '#664444', () => {
+      this._doSignOut();
+    });
   }
 
   // ---------------------------------------------------------------------------
