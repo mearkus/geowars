@@ -25,7 +25,7 @@
       -webkit-tap-highlight-color: transparent;
       padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     }
-    #c { display: block; }
+    #c { display: block; touch-action: none; }
     #nameInput {
       display: none;
       position: fixed;
@@ -364,7 +364,9 @@ class InputManager {
   }
 
   _ts(e) {
-    e.preventDefault();
+    // touch-action:none on the canvas handles scroll/zoom prevention;
+    // NOT calling preventDefault() here so the browser still synthesises
+    // click events for the game's menu button handler.
     for (const touch of e.changedTouches) {
       const cp = this._cp(touch);
       if (cp.x < this.canvas.width / 2) {
@@ -384,7 +386,6 @@ class InputManager {
   }
 
   _tm(e) {
-    e.preventDefault();
     for (const touch of e.changedTouches) {
       const cp = this._cp(touch);
       if (touch.identifier === this.leftStick.id) {
@@ -396,7 +397,6 @@ class InputManager {
   }
 
   _te(e) {
-    e.preventDefault();
     for (const touch of e.changedTouches) {
       if (touch.identifier === this.leftStick.id) {
         this.leftStick.id = null;
