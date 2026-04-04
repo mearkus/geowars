@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#000008">
@@ -23,6 +23,7 @@
       -webkit-user-select: none;
       user-select: none;
       -webkit-tap-highlight-color: transparent;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     }
     #c { display: block; }
     #nameInput {
@@ -42,7 +43,7 @@
       box-shadow: 0 0 24px #00ffff88, inset 0 0 10px rgba(0,255,255,0.08);
       letter-spacing: 3px;
       text-transform: uppercase;
-      width: 290px;
+      width: min(290px, 90vw);
       z-index: 100;
       border-radius: 2px;
     }
@@ -51,7 +52,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
-<input id="nameInput" type="text" maxlength="12" placeholder="ENTER NAME" autocomplete="off" autocorrect="off" spellcheck="false">
+<input id="nameInput" type="text" maxlength="12" placeholder="ENTER NAME" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="text">
 <script>
 'use strict';
 // =============================================================================
@@ -409,7 +410,7 @@ class InputManager {
   }
 
   update(playerPos) {
-    const MAX_RADIUS = 65;
+    const MAX_RADIUS = Math.min(Math.max(65, Math.min(this.canvas.width, this.canvas.height) * 0.13), 90);
 
     // Left stick / WASD
     if (this.leftStick.id !== null) {
@@ -445,7 +446,7 @@ class InputManager {
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist > 0) {
         this.right.set(dx / dist, dy / dist);
-        this.shooting = dist > 12;
+        this.shooting = dist > 18;
       } else {
         this.right.set(0, 0);
         this.shooting = false;
@@ -1482,6 +1483,7 @@ class Game {
     this._setupEvents();
     this.resize();
     window.addEventListener('resize', () => this.resize());
+    this.paused = false;
     requestAnimationFrame(t => { this.lastTime = t; this.loop(t); });
   }
 
@@ -1523,6 +1525,21 @@ class Game {
     this.nameInput.addEventListener('blur', () => {
       if (this.renamingSlot >= 0) this._confirmRename();
     });
+
+    // Orientation change (fires before resize on some iOS)
+    window.addEventListener('orientationchange', () => setTimeout(() => this.resize(), 100));
+
+    // Auto-pause when tab is hidden (phone call, notification, etc.)
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && this.state === 'playing') this.setState('paused');
+    });
+
+    // Prevent pinch-to-zoom on iOS
+    this.canvas.addEventListener('gesturestart', e => e.preventDefault(), { passive: false });
+    this.canvas.addEventListener('gesturechange', e => e.preventDefault(), { passive: false });
+
+    // Prevent scroll bleed
+    window.addEventListener('wheel', e => e.preventDefault(), { passive: false });
   }
 
   _canvasPos(e) {
@@ -1733,7 +1750,9 @@ class Game {
   update(dt) {
     this.frameCount++;
 
-    if (this.state === 'playing') {
+    if (this.state === 'paused') {
+      return; // freeze everything
+    } else if (this.state === 'playing') {
       this.input.update(this.player ? this.player.pos : null);
       this._updateGame(dt);
     } else if (this.state === 'level_clear') {
@@ -1921,6 +1940,10 @@ class Game {
         break;
       case 'phase_clear':    this._drawPhaseClear(ctx);    break;
       case 'gameover':       this._drawGameOver(ctx);       break;
+      case 'paused':
+        this._drawPlaying(ctx);
+        this._drawPaused(ctx);
+        break;
     }
 
     ctx.restore();
@@ -1972,11 +1995,12 @@ class Game {
     this._neonText(ctx, 'SELECT PROFILE', W / 2, H * 0.12 + 48, '#8888ff', 18);
     this._neonText(ctx, 'HOLD CARD TO RENAME', W / 2, H * 0.12 + 78, '#445566', 12);
 
-    const cardW = Math.min(W * 0.8, 380);
-    const cardH = 90;
+    const cardW = Math.min(W * 0.88, 380);
+    const cardH = Math.max(80, H * 0.12);
     const cardX = W / 2 - cardW / 2;
-    const startY = H * 0.3;
-    const gap = 108;
+    const totalCards = 3 * cardH + 2 * (cardH * 0.22);
+    const startY = Math.max(H * 0.28, (H - totalCards) / 2);
+    const gap = cardH + Math.round(cardH * 0.22);
 
     for (let i = 0; i < 3; i++) {
       const cy = startY + i * gap;
@@ -2019,10 +2043,10 @@ class Game {
     this._neonText(ctx, profName, W / 2, H * 0.1 + 36, '#8888ff', 14);
 
     const tileW = Math.min(W * 0.85, 360);
-    const tileH = 68;
+    const tileH = Math.max(58, Math.min(H * 0.1, 75));
     const tileX = W / 2 - tileW / 2;
     const startY = H * 0.24;
-    const gap = 80;
+    const gap = tileH + Math.max(10, H * 0.015);
 
     for (let ph = 0; ph < 5; ph++) {
       const pd = PHASES_DATA[ph];
@@ -2214,7 +2238,9 @@ class Game {
   }
 
   _drawJoysticks(ctx) {
-    const MAX = 65;
+    const { W, H } = this;
+    const MAX = Math.min(Math.max(65, Math.min(W, H) * 0.13), 90);
+    const thumbR = Math.round(MAX * 0.38);
 
     const drawStick = (stick) => {
       if (!stick) return;
@@ -2244,10 +2270,11 @@ class Game {
         ty = pos.y;
       }
 
-      ctx.fillStyle = 'rgba(255,255,255,0.22)';
-      ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(tx, ty, 26, 0, Math.PI * 2);
+      ctx.arc(tx, ty, thumbR, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
 
@@ -2256,6 +2283,35 @@ class Game {
 
     drawStick(this.input.getLeftStick());
     drawStick(this.input.getRightStick());
+
+    // Pause button (top-center, only during active play)
+    const pw = 44, ph = 36;
+    const px = W / 2 - pw / 2, py = 8;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(px, py, pw, ph);
+    ctx.fillRect(px, py, pw, ph);
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.fillRect(px + 13, py + 9, 5, 18);
+    ctx.fillRect(px + 26, py + 9, 5, 18);
+    ctx.restore();
+    this._addZone(px, py, pw, ph, () => this.setState('paused'));
+  }
+
+  _drawPaused(ctx) {
+    const { W, H } = this;
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(0, 0, W, H);
+    this._neonText(ctx, 'PAUSED', W / 2, H / 2 - 50, '#00ffff', 40);
+    this._button(ctx, 'RESUME', W / 2 - 100, H / 2, 200, 52, '#00ff88', () => this.setState('playing'));
+    this._button(ctx, 'QUIT TO MENU', W / 2 - 100, H / 2 + 68, 200, 48, '#ff4444', () => {
+      this._gameOver();
+      this.setState('menu');
+    });
+    ctx.restore();
   }
 
   _drawLevelClear(ctx) {
