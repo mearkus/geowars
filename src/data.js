@@ -117,82 +117,88 @@ class WaveSpawner {
   }
 }
 
+// ProfileManager — Supabase-backed user accounts + global leaderboard
+// _sb must be defined in the outer scope (set to null in tests to skip DB calls)
 class ProfileManager {
   constructor() {
-    this.profiles = [null, null, null];
-    this.active = 0;
-    this.load();
+    this.profile     = null;  // { id, name, high_score, highest_level, total_kills, total_games, unlocked_phases }
+    this.userId      = null;
+    this.email       = null;
+    this.leaderboard = [];    // [{ name, score, level, created_at }, ...]
   }
 
-  _default(i) {
-    return {
-      name: `PLAYER ${i + 1}`,
-      highScore: 0,
-      highestLevel: 0,
-      totalKills: 0,
-      totalGamesPlayed: 0,
-      lastPlayed: 0,
-      unlockedPhases: [true, false, false, false, false],
-    };
-  }
+  // Load profile from DB after sign-in. Creates the row if it doesn't exist yet.
+  async load(session) {
+    if (!_sb) return;
+    this.userId = session.user.id;
+    this.email  = session.user.email;
 
-  load() {
-    for (let i = 0; i < 3; i++) {
-      try {
-        const raw = localStorage.getItem(`gw_profile_${i}`);
-        this.profiles[i] = raw ? JSON.parse(raw) : null;
-      } catch (e) {
-        this.profiles[i] = null;
-      }
+    let { data } = await _sb.from('profiles').select('*').eq('id', this.userId).single();
+
+    if (!data) {
+      const res = await _sb.from('profiles').insert({
+        id: this.userId,
+        name: 'PLAYER',
+        high_score: 0,
+        highest_level: 0,
+        total_kills: 0,
+        total_games: 0,
+        unlocked_phases: [true, false, false, false, false]
+      }).select().single();
+      data = res.data;
     }
+
+    this.profile = data;
+    await this.loadLeaderboard();
   }
 
-  save(i) {
-    try {
-      localStorage.setItem(`gw_profile_${i}`, JSON.stringify(this.profiles[i]));
-    } catch (e) {
-      // silently fail if localStorage is unavailable
-    }
+  getActive() { return this.profile; }
+
+  async updateActive(updates) {
+    if (!this.profile || !_sb) return;
+    Object.assign(this.profile, updates);
+    await _sb.from('profiles').update(updates).eq('id', this.userId);
   }
 
-  get(i) {
-    return this.profiles[i];
+  async submitScore(score, level) {
+    if (!_sb || !this.userId) return;
+    await _sb.from('scores').insert({
+      user_id: this.userId,
+      name:    this.profile?.name ?? 'PLAYER',
+      score,
+      level
+    });
+    await this.loadLeaderboard();
   }
 
-  create(i) {
-    this.profiles[i] = this._default(i);
-    this.save(i);
-    return this.profiles[i];
+  async loadLeaderboard() {
+    if (!_sb) return;
+    const { data } = await _sb.from('scores')
+      .select('name, score, level, created_at')
+      .order('score', { ascending: false })
+      .limit(10);
+    this.leaderboard = data ?? [];
   }
 
-  getOrCreate(i) {
-    return this.profiles[i] || this.create(i);
-  }
-
-  update(i, updates) {
-    if (this.profiles[i]) {
-      Object.assign(this.profiles[i], updates);
-      this.save(i);
-    }
-  }
-
-  getActive() {
-    return this.profiles[this.active];
-  }
-
-  firstUnlockedPhase(i) {
-    const p = this.profiles[i];
+  firstUnlockedPhase() {
+    const p = this.profile;
     if (!p) return 0;
+    const phases = p.unlocked_phases || [true, false, false, false, false];
     let highest = 0;
-    for (let ph = 0; ph < p.unlockedPhases.length; ph++) {
-      if (p.unlockedPhases[ph] === true) {
-        highest = ph;
-      }
+    for (let ph = 0; ph < phases.length; ph++) {
+      if (phases[ph] === true) highest = ph;
     }
     return highest;
   }
 
-  startLevelForPhase(phaseIdx) {
-    return PHASES_DATA[phaseIdx].start;
+  async rename(name) {
+    await this.updateActive({ name });
+  }
+
+  async signOut() {
+    if (_sb) await _sb.auth.signOut();
+    this.profile  = null;
+    this.userId   = null;
+    this.email    = null;
   }
 }

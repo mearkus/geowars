@@ -58,6 +58,11 @@ HTMLCanvasElement.prototype.getBoundingClientRect = vi.fn(() => ({
 global.requestAnimationFrame = vi.fn(cb => setTimeout(cb, 16));
 global.cancelAnimationFrame = vi.fn();
 
+// ── Mock Supabase client (_sb) ─────────────────────────────────────────────────
+// Default: null (ProfileManager skips all DB calls). Tests can override _sb to
+// inject a mock and test the async paths.
+global._sb = null;
+
 // ── Mock localStorage ──────────────────────────────────────────────────────────
 const store = {};
 global.localStorage = {
