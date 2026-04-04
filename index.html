@@ -1532,6 +1532,12 @@ class Game {
     this.emailInput    = document.getElementById('emailInput');
     this.passwordInput = document.getElementById('passwordInput');
 
+    // Analytics session ID — unique per page load
+    this._sessionId = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2);
+    this._sessionStart = Date.now();
+
     this.audio = new AudioManager();
     this.input = new InputManager(this.canvas);
     this.particles = new ParticleSystem();
@@ -1761,6 +1767,8 @@ class Game {
       return;
     }
     await this.profiles.load(data.session);
+    this._track('sign_in');
+    this._track('session_start', { method: 'sign_in' });
     this.setState('menu');
   }
 
@@ -1771,6 +1779,7 @@ class Game {
     this._authError = '';
     const { data, error } = await _sb.auth.signUp({ email, password });
     if (error) { this._authError = error.message.toUpperCase(); return; }
+    this._track('sign_up');
     this._pendingEmail = email;
     this.setState('verify_email');
   }
@@ -1796,7 +1805,26 @@ class Game {
       unlocked_phases: [true, false, false, false, false],
     };
     this.profiles.userId = null; // keeps submitScore / updateActive as no-ops
+    this._track('session_start', { method: 'guest' });
     this.setState('menu');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Analytics
+  // ---------------------------------------------------------------------------
+
+  _track(event, props = {}) {
+    if (!_sb) return;
+    // Fire-and-forget — never blocks the game loop
+    _sb.from('events').insert({
+      user_id:    this.profiles.userId ?? null,
+      session_id: this._sessionId,
+      event,
+      props: {
+        ...props,
+        is_guest: !this.profiles.userId,
+      },
+    }).then(() => {}).catch(() => {});
   }
 
   // ---------------------------------------------------------------------------
@@ -1828,6 +1856,9 @@ class Game {
       });
     }
 
+    const phase = Math.min(levelIdx, 29) < 30 ? LEVELS_DATA[Math.min(levelIdx, 29)].phase : 4;
+    this._track('game_start', { level: levelIdx, phase });
+
     this.startLevel(levelIdx);
   }
 
@@ -1846,6 +1877,8 @@ class Game {
     this._explode(this.player.pos.x, this.player.pos.y, '#00ffff', 40, 300);
     this.screenShake = 0.9;
     this.lives--;
+    const phase = this.currentLevelIdx < 30 ? LEVELS_DATA[this.currentLevelIdx].phase : 4;
+    this._track('player_death', { level: this.currentLevelIdx, phase, score: this.score, lives_remaining: this.lives });
     if (this.lives <= 0) {
       this._gameOver();
     } else {
@@ -1868,6 +1901,9 @@ class Game {
       this.profiles.updateActive({ high_score: newHigh, highest_level: newLevel });
       this.profiles.submitScore(this.score, this.currentLevelIdx); // async fire-and-forget
     }
+
+    const phase = this.currentLevelIdx < 30 ? LEVELS_DATA[this.currentLevelIdx].phase : 4;
+    this._track('game_over', { level: this.currentLevelIdx, phase, score: this.score, is_new_best: this.isNewBest });
 
     this.setState('gameover');
   }
@@ -1895,6 +1931,8 @@ class Game {
     const curPhase = LEVELS_DATA[safeLevelIdx].phase;
     const phaseEnd = PHASES_DATA[curPhase].end;
 
+    this._track('level_complete', { level: this.currentLevelIdx, phase: curPhase, score: this.score });
+
     if (this.currentLevelIdx === phaseEnd && curPhase < 4) {
       // Unlock next phase in profile
       const activeProfData = this.profiles.getActive();
@@ -1903,6 +1941,7 @@ class Game {
         newUnlocked[curPhase + 1] = true;
         this.profiles.updateActive({ unlocked_phases: newUnlocked });
       }
+      this._track('phase_complete', { phase: curPhase, score: this.score });
       this.isPhaseEnd = true;
       this.phaseClearPhase = curPhase;
       this.levelClearTimer = 3.0;
@@ -2413,7 +2452,7 @@ class Game {
     });
 
     this._button(ctx, 'SCORES', btnX, btnsStartY + 2 * (btnH + btnGap), btnW, btnH, '#ffff44', () => {
-      this.profiles.loadLeaderboard().then(() => this.setState('leaderboard'));
+      this.profiles.loadLeaderboard().then(() => { this._track('leaderboard_view'); this.setState('leaderboard'); });
     });
 
     // Phone controller button (orange — indicates secondary/device feature)
