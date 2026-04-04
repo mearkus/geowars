@@ -9,6 +9,7 @@
   <title>Geo Wars</title>
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
@@ -28,7 +29,7 @@
       padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     }
     #c { display: block; touch-action: none; }
-    #nameInput {
+    #nameInput, #emailInput, #passwordInput {
       display: none;
       position: fixed;
       top: 50%;
@@ -49,14 +50,27 @@
       z-index: 100;
       border-radius: 2px;
     }
-    #nameInput::placeholder { color: #336677; letter-spacing: 2px; }
+    #nameInput::placeholder, #emailInput::placeholder, #passwordInput::placeholder { color: #336677; letter-spacing: 2px; }
   </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <input id="nameInput" type="text" maxlength="12" placeholder="ENTER NAME" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="text">
+<div id="authOverlay" style="display:none; position:fixed; inset:0; z-index:50; display:none; flex-direction:column; align-items:center; justify-content:center; gap:12px; pointer-events:none;">
+  <input id="emailInput" type="email" maxlength="60" placeholder="EMAIL" autocomplete="email" autocorrect="off" autocapitalize="off" spellcheck="false" style="display:none; pointer-events:auto;">
+  <input id="passwordInput" type="password" maxlength="60" placeholder="PASSWORD" autocomplete="current-password" style="display:none; pointer-events:auto;">
+</div>
 <script>
 'use strict';
+// =============================================================================
+// Supabase config — replace with your project values
+// =============================================================================
+const SUPABASE_URL  = 'https://vmtnxtmjfsnuyqgtgazz.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZtdG54dG1qZnNudXlxZ3RnYXp6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUzMzM3NzksImV4cCI6MjA5MDkwOTc3OX0.mpRZ0osV9jUNCYpuI_mkwBixMOe6_g8_ChP7617d09k';
+const _sb = (typeof supabase !== 'undefined')
+  ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON)
+  : null; // graceful no-op if CDN fails to load
+
 // =============================================================================
 // Vec2 — 2D vector math
 // =============================================================================
@@ -1421,83 +1435,92 @@ class WaveSpawner {
   }
 }
 
+// =============================================================================
+// ProfileManager — Supabase-backed user accounts + global leaderboard
+// =============================================================================
 class ProfileManager {
   constructor() {
-    this.profiles = [null, null, null];
-    this.active = 0;
-    this.load();
+    this.profile     = null;  // { id, name, high_score, highest_level, total_kills, total_games, unlocked_phases }
+    this.userId      = null;
+    this.email       = null;
+    this.leaderboard = [];    // [{ name, score, level, created_at }, ...]
   }
 
-  _default(i) {
-    return {
-      name: `PLAYER ${i + 1}`,
-      highScore: 0,
-      highestLevel: 0,
-      totalKills: 0,
-      totalGamesPlayed: 0,
-      lastPlayed: 0,
-      unlockedPhases: [true, false, false, false, false],
-    };
-  }
+  // Load profile from DB after sign-in. Creates the row if it doesn't exist yet.
+  async load(session) {
+    if (!_sb) return;
+    this.userId = session.user.id;
+    this.email  = session.user.email;
 
-  load() {
-    for (let i = 0; i < 3; i++) {
-      try {
-        const raw = localStorage.getItem(`gw_profile_${i}`);
-        this.profiles[i] = raw ? JSON.parse(raw) : null;
-      } catch (e) {
-        this.profiles[i] = null;
-      }
+    // Try to fetch existing profile
+    let { data } = await _sb.from('profiles').select('*').eq('id', this.userId).single();
+
+    if (!data) {
+      // First login — create profile row
+      const res = await _sb.from('profiles').insert({
+        id: this.userId,
+        name: 'PLAYER',
+        high_score: 0,
+        highest_level: 0,
+        total_kills: 0,
+        total_games: 0,
+        unlocked_phases: [true, false, false, false, false]
+      }).select().single();
+      data = res.data;
     }
+
+    this.profile = data;
+    await this.loadLeaderboard();
   }
 
-  save(i) {
-    try {
-      localStorage.setItem(`gw_profile_${i}`, JSON.stringify(this.profiles[i]));
-    } catch (e) {
-      // silently fail if localStorage is unavailable
-    }
+  getActive() { return this.profile; }
+
+  async updateActive(updates) {
+    if (!this.profile || !_sb) return;
+    Object.assign(this.profile, updates);
+    await _sb.from('profiles').update(updates).eq('id', this.userId);
   }
 
-  get(i) {
-    return this.profiles[i];
+  async submitScore(score, level) {
+    if (!_sb || !this.userId) return;
+    await _sb.from('scores').insert({
+      user_id: this.userId,
+      name:    this.profile?.name ?? 'PLAYER',
+      score,
+      level
+    });
+    await this.loadLeaderboard();
   }
 
-  create(i) {
-    this.profiles[i] = this._default(i);
-    this.save(i);
-    return this.profiles[i];
+  async loadLeaderboard() {
+    if (!_sb) return;
+    const { data } = await _sb.from('scores')
+      .select('name, score, level, created_at')
+      .order('score', { ascending: false })
+      .limit(10);
+    this.leaderboard = data ?? [];
   }
 
-  getOrCreate(i) {
-    return this.profiles[i] || this.create(i);
-  }
-
-  update(i, updates) {
-    if (this.profiles[i]) {
-      Object.assign(this.profiles[i], updates);
-      this.save(i);
-    }
-  }
-
-  getActive() {
-    return this.profiles[this.active];
-  }
-
-  firstUnlockedPhase(i) {
-    const p = this.profiles[i];
+  firstUnlockedPhase() {
+    const p = this.profile;
     if (!p) return 0;
+    const phases = p.unlocked_phases || [true, false, false, false, false];
     let highest = 0;
-    for (let ph = 0; ph < p.unlockedPhases.length; ph++) {
-      if (p.unlockedPhases[ph] === true) {
-        highest = ph;
-      }
+    for (let ph = 0; ph < phases.length; ph++) {
+      if (phases[ph] === true) highest = ph;
     }
     return highest;
   }
 
-  startLevelForPhase(phaseIdx) {
-    return PHASES_DATA[phaseIdx].start;
+  async rename(name) {
+    await this.updateActive({ name });
+  }
+
+  async signOut() {
+    if (_sb) await _sb.auth.signOut();
+    this.profile  = null;
+    this.userId   = null;
+    this.email    = null;
   }
 }
 // =============================================================================
@@ -1508,6 +1531,8 @@ class Game {
     this.canvas = document.getElementById('c');
     this.ctx = this.canvas.getContext('2d');
     this.nameInput = document.getElementById('nameInput');
+    this.emailInput    = document.getElementById('emailInput');
+    this.passwordInput = document.getElementById('passwordInput');
 
     this.audio = new AudioManager();
     this.input = new InputManager(this.canvas);
@@ -1516,7 +1541,7 @@ class Game {
     this.profiles = new ProfileManager();
 
     // State machine
-    this.state = 'profile_select'; // profile_select | phase_select | menu | playing | level_clear | phase_clear | gameover
+    this.state = 'auth'; // auth | verify_email | phase_select | menu | pairing | leaderboard | playing | level_clear | phase_clear | gameover | paused
 
     // Game state
     this.score = 0;
@@ -1550,6 +1575,12 @@ class Game {
     this._longPressHandled = false;
     this.renamingSlot = -1;
 
+    // Auth state
+    this._authMode  = 'signin'; // 'signin' | 'signup'
+    this._authError = '';
+    this._verifyPollTimer = 0;
+    this._creatingAccount = false;
+
     // Phone controller
     this.peerManager    = null;
     this.peerConnected  = false;
@@ -1566,6 +1597,7 @@ class Game {
     this.resize();
     window.addEventListener('resize', () => this.resize());
     this.paused = false;
+    this._checkSession();
     requestAnimationFrame(t => { this.lastTime = t; this.loop(t); });
   }
 
@@ -1593,9 +1625,9 @@ class Game {
 
     this.canvas.addEventListener('pointerup', e => {
       const held = performance.now() - this.pressStart;
-      if (held >= 480 && this.pressSlot >= 0 && this.state === 'profile_select') {
+      if (held >= 480 && this.pressSlot >= 0 && this.state === 'menu') {
         this._longPressHandled = true;
-        this._startRename(this.pressSlot);
+        this._startRename();
       }
       this.pressSlot = -1;
     });
@@ -1658,22 +1690,28 @@ class Game {
     this.clickZones.push({ x, y, w, h, action, longPress, slot });
   }
 
-  _startRename(slot) {
-    this.renamingSlot = slot;
-    this.profiles.getOrCreate(slot);
+  _startRename() {
+    this.renamingSlot = 0; // single active profile
     this.nameInput.style.display = 'block';
-    this.nameInput.value = this.profiles.get(slot).name;
+    this.nameInput.value = this.profiles.profile?.name ?? '';
     this.nameInput.focus();
     this.nameInput.select();
   }
 
   _confirmRename() {
-    const slot = this.renamingSlot;
     this.renamingSlot = -1;
     this.nameInput.style.display = 'none';
-    if (slot < 0) return;
-    const name = this.nameInput.value.trim().toUpperCase().substring(0, 12) || `PLAYER ${slot + 1}`;
-    this.profiles.update(slot, { name });
+    const name = this.nameInput.value.trim().toUpperCase().substring(0, 12) || 'PLAYER';
+    this.profiles.rename(name); // async fire-and-forget
+  }
+
+  _showAuthOverlay() {
+    this.emailInput.style.display    = 'block';
+    this.passwordInput.style.display = 'block';
+  }
+  _hideAuthOverlay() {
+    this.emailInput.style.display    = 'none';
+    this.passwordInput.style.display = 'none';
   }
 
   resize() {
@@ -1684,8 +1722,69 @@ class Game {
 
   setState(s) {
     if (this.state === 'pairing' && s !== 'pairing') this._hidePairingQR();
+    // Show/hide auth inputs
+    if (s === 'auth') {
+      this._showAuthOverlay();
+    } else {
+      this._hideAuthOverlay();
+    }
     this.state = s;
     this.stateTimer = 0;
+  }
+
+  async _checkSession() {
+    if (!_sb) { this.setState('auth'); return; }
+    const { data: { session } } = await _sb.auth.getSession();
+    if (session?.user?.email_confirmed_at) {
+      await this.profiles.load(session);
+      this.setState('menu');
+    } else if (session) {
+      this._pendingEmail = session.user.email;
+      this.setState('verify_email');
+    } else {
+      this.setState('auth');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Auth action methods
+  // ---------------------------------------------------------------------------
+
+  async _doSignIn() {
+    if (!_sb) return;
+    const email    = this.emailInput.value.trim();
+    const password = this.passwordInput.value;
+    this._authError = '';
+    const { data, error } = await _sb.auth.signInWithPassword({ email, password });
+    if (error) { this._authError = error.message.toUpperCase(); return; }
+    if (!data.user.email_confirmed_at) {
+      this._pendingEmail = email;
+      this.setState('verify_email');
+      return;
+    }
+    await this.profiles.load(data.session);
+    this.setState('menu');
+  }
+
+  async _doSignUp() {
+    if (!_sb) return;
+    const email    = this.emailInput.value.trim();
+    const password = this.passwordInput.value;
+    this._authError = '';
+    const { data, error } = await _sb.auth.signUp({ email, password });
+    if (error) { this._authError = error.message.toUpperCase(); return; }
+    this._pendingEmail = email;
+    this.setState('verify_email');
+  }
+
+  async _doResendVerification() {
+    if (!_sb || !this._pendingEmail) return;
+    await _sb.auth.resend({ type: 'signup', email: this._pendingEmail });
+  }
+
+  async _doSignOut() {
+    await this.profiles.signOut();
+    this.setState('auth');
   }
 
   // ---------------------------------------------------------------------------
@@ -1711,9 +1810,9 @@ class Game {
     // Update profile
     const prof = this.profiles.getActive();
     if (prof) {
-      this.profiles.update(this.profiles.active, {
-        totalGamesPlayed: (prof.totalGamesPlayed || 0) + 1,
-        lastPlayed: Date.now()
+      this.profiles.updateActive({
+        total_games: (prof.total_games || 0) + 1,
+        updated_at: new Date().toISOString()
       });
     }
 
@@ -1747,15 +1846,15 @@ class Game {
 
   _gameOver() {
     const prof = this.profiles.getActive();
-    const oldHighScore = prof ? (prof.highScore || 0) : 0;
-    const oldHighestLevel = prof ? (prof.highestLevel || 0) : 0;
+    const oldHighScore = prof ? (prof.high_score || 0) : 0;
+    const oldHighestLevel = prof ? (prof.highest_level || 0) : 0;
     this.isNewBest = this.score > oldHighScore;
 
     if (prof) {
-      this.profiles.update(this.profiles.active, {
-        highScore: Math.max(oldHighScore, this.score),
-        highestLevel: Math.max(oldHighestLevel, this.currentLevelIdx)
-      });
+      const newHigh = Math.max(oldHighScore, this.score);
+      const newLevel = Math.max(oldHighestLevel, this.currentLevelIdx);
+      this.profiles.updateActive({ high_score: newHigh, highest_level: newLevel });
+      this.profiles.submitScore(this.score, this.currentLevelIdx); // async fire-and-forget
     }
 
     this.setState('gameover');
@@ -1769,13 +1868,14 @@ class Game {
 
     // Save progress
     const prof = this.profiles.getActive();
-    const oldHighScore = prof ? (prof.highScore || 0) : 0;
-    const oldHighestLevel = prof ? (prof.highestLevel || 0) : 0;
+    const oldHighScore = prof ? (prof.high_score || 0) : 0;
+    const oldHighestLevel = prof ? (prof.highest_level || 0) : 0;
     if (prof) {
-      this.profiles.update(this.profiles.active, {
-        highestLevel: Math.max(oldHighestLevel, this.currentLevelIdx + 1),
-        highScore: Math.max(oldHighScore, this.score)
+      this.profiles.updateActive({
+        highest_level: Math.max(oldHighestLevel, this.currentLevelIdx + 1),
+        high_score: Math.max(oldHighScore, this.score)
       });
+      this.profiles.submitScore(this.score, this.currentLevelIdx); // async fire-and-forget
     }
 
     // Check if this is the last level of a phase
@@ -1787,9 +1887,9 @@ class Game {
       // Unlock next phase in profile
       const activeProfData = this.profiles.getActive();
       if (activeProfData) {
-        const newUnlocked = [...(activeProfData.unlockedPhases || [true, false, false, false, false])];
+        const newUnlocked = [...(activeProfData.unlocked_phases || [true, false, false, false, false])];
         newUnlocked[curPhase + 1] = true;
-        this.profiles.update(this.profiles.active, { unlockedPhases: newUnlocked });
+        this.profiles.updateActive({ unlocked_phases: newUnlocked });
       }
       this.isPhaseEnd = true;
       this.phaseClearPhase = curPhase;
@@ -1860,6 +1960,22 @@ class Game {
       }
     } else if (this.state === 'pairing') {
       // Waiting for phone — PeerManager callbacks drive the transition
+    } else if (this.state === 'auth') {
+      // inputs handled by DOM; no game logic
+    } else if (this.state === 'verify_email') {
+      this._verifyPollTimer -= dt;
+      if (this._verifyPollTimer <= 0) {
+        this._verifyPollTimer = 4;
+        if (_sb) {
+          _sb.auth.getSession().then(({ data: { session } }) => {
+            if (session?.user?.email_confirmed_at) {
+              this.profiles.load(session).then(() => this.setState('menu'));
+            }
+          });
+        }
+      }
+    } else if (this.state === 'leaderboard') {
+      // no-op
     }
 
     if (this._connLostTimer > 0) this._connLostTimer -= dt;
@@ -1950,9 +2066,11 @@ class Game {
             // Update profile kills
             const prof = this.profiles.getActive();
             if (prof) {
-              this.profiles.update(this.profiles.active, {
-                totalKills: (prof.totalKills || 0) + 1
-              });
+              prof.total_kills = (prof.total_kills || 0) + 1;
+              // Batch-save every 10 kills to reduce DB writes
+              if (prof.total_kills % 10 === 0) {
+                this.profiles.updateActive({ total_kills: prof.total_kills });
+              }
             }
 
             this.audio.explode(e.size / 14);
@@ -2017,7 +2135,9 @@ class Game {
     this.grid.draw(ctx);
 
     switch (this.state) {
-      case 'profile_select': this._drawProfileSelect(ctx); break;
+      case 'auth':          this._drawAuth(ctx);         break;
+      case 'verify_email':  this._drawVerifyEmail(ctx);   break;
+      case 'leaderboard':   this._drawLeaderboard(ctx);   break;
       case 'phase_select':   this._drawPhaseSelect(ctx);   break;
       case 'menu':           this._drawMenu(ctx);           break;
       case 'pairing':        this._drawPairing(ctx);        break;
@@ -2075,103 +2195,101 @@ class Game {
   // Screen drawing methods
   // ---------------------------------------------------------------------------
 
-  _drawProfileSelect(ctx) {
+  _drawAuth(ctx) {
     const { W, H } = this;
-    const isLandscape = W > H * 1.2;
+    const isSignUp = this._authMode === 'signup';
 
-    if (isLandscape) {
-      // ── Landscape: compact header + 3 cards side by side ──
-      const titleSize = Math.min(24, H * 0.07);
-      this._neonText(ctx, 'GEO WARS', W / 2, H * 0.1, '#00ffff', titleSize);
-      this._neonText(ctx, 'SELECT PROFILE', W / 2, H * 0.1 + titleSize + 6, '#8888ff', Math.min(14, H * 0.04));
+    this._neonText(ctx, 'GEO WARS', W / 2, H * 0.12, '#00ffff', Math.min(34, H * 0.055));
+    this._neonText(ctx, isSignUp ? 'CREATE ACCOUNT' : 'SIGN IN', W / 2, H * 0.22, '#8888ff', Math.min(18, H * 0.04));
 
-      const gap = Math.max(8, W * 0.012);
-      const cardW = Math.min((W - gap * 4) / 3, W * 0.29);
-      const cardH = H * 0.56;
-      const totalW = 3 * cardW + 2 * gap;
-      const startX = W / 2 - totalW / 2;
-      const cardsY = H * 0.3;
+    // Position the DOM inputs over the canvas
+    const inputW = Math.min(280, W * 0.75);
+    const inputH = 44;
+    const inputX = W / 2 - inputW / 2;
+    const emailY = H * 0.35;
+    const passY  = emailY + inputH + 12;
 
-      for (let i = 0; i < 3; i++) {
-        const cx = startX + i * (cardW + gap);
-        const isActive = (i === this.profiles.active);
-        const color = isActive ? '#00ffff' : '#446688';
-        const prof = this.profiles.get(i);
+    // Style inputs to sit at the right canvas position
+    const r = this.canvas.getBoundingClientRect();
+    const sx = r.width  / W;
+    const sy = r.height / H;
+    const setInputStyle = (el, cx, cy, cw, ch) => {
+      el.style.position  = 'fixed';
+      el.style.left      = (r.left + cx * sx) + 'px';
+      el.style.top       = (r.top  + cy * sy) + 'px';
+      el.style.width     = (cw * sx) + 'px';
+      el.style.height    = (ch * sy) + 'px';
+      el.style.fontSize  = Math.round(16 * sy) + 'px';
+    };
+    setInputStyle(this.emailInput,    inputX, emailY - inputH / 2, inputW, inputH);
+    setInputStyle(this.passwordInput, inputX, passY  - inputH / 2, inputW, inputH);
 
-        this._neonRect(ctx, cx, cardsY, cardW, cardH, color);
-
-        const nameY = cardsY + cardH * 0.32;
-        const statsY = cardsY + cardH * 0.62;
-        if (prof) {
-          this._neonText(ctx, prof.name, cx + cardW / 2, nameY, color, Math.min(15, cardW * 0.065));
-          this._neonText(ctx, `HI ${prof.highScore || 0}`, cx + cardW / 2, statsY, '#667799', Math.min(11, cardW * 0.048));
-          this._neonText(ctx, `LV ${(prof.highestLevel || 0) + 1}  K ${prof.totalKills || 0}`, cx + cardW / 2, statsY + 16, '#667799', Math.min(10, cardW * 0.044));
-          // Rename button — bottom of card
-          const rbW = Math.min(64, cardW * 0.36), rbH = Math.max(18, cardH * 0.18);
-          const rbX = cx + cardW / 2 - rbW / 2, rbY = cardsY + cardH - rbH - 6;
-          const slotIdx = i;
-          this._button(ctx, 'RENAME', rbX, rbY, rbW, rbH, '#556677', () => { this._startRename(slotIdx); });
-        } else {
-          this._neonText(ctx, `SLOT ${i + 1}`, cx + cardW / 2, nameY, '#446688', Math.min(14, cardW * 0.06));
-          this._neonText(ctx, 'EMPTY', cx + cardW / 2, statsY, '#334455', Math.min(11, cardW * 0.048));
-        }
-
-        const slotIdx = i;
-        this._addZone(cx, cardsY, cardW, cardH, () => {
-          this.profiles.active = slotIdx;
-          this.profiles.getOrCreate(slotIdx);
-          this.setState('menu');
-        });
-        this._addZone(cx, cardsY, cardW, cardH, () => {}, true, i);
-      }
-    } else {
-      // ── Portrait: vertical stack ──
-      const titleSize = Math.min(34, H * 0.05);
-      const titleY = H * 0.1;
-      this._neonText(ctx, 'GEO WARS', W / 2, titleY, '#00ffff', titleSize);
-      this._neonText(ctx, 'SELECT PROFILE', W / 2, titleY + titleSize + 8, '#8888ff', 18);
-
-      const cardW = Math.min(W * 0.88, 380);
-      const cardH = Math.max(72, H * 0.12);
-      const cardX = W / 2 - cardW / 2;
-      const totalCards = 3 * cardH + 2 * (cardH * 0.22);
-      const headerEnd = titleY + titleSize + 44;
-      const startY = Math.max(headerEnd + 10, Math.max(H * 0.26, (H - totalCards) / 2));
-      const gap = cardH + Math.round(cardH * 0.22);
-
-      for (let i = 0; i < 3; i++) {
-        const cy = startY + i * gap;
-        const isActive = (i === this.profiles.active);
-        const color = isActive ? '#00ffff' : '#446688';
-        const prof = this.profiles.get(i);
-
-        this._neonRect(ctx, cardX, cy, cardW, cardH, color);
-
-        const nameOff = Math.round(cardH * 0.38);
-        const statsOff = Math.round(cardH * 0.65);
-        if (prof) {
-          this._neonText(ctx, prof.name, cardX + 18, cy + nameOff, color, 17, 'left');
-          const statsStr = `HI: ${prof.highScore || 0}  |  LV: ${(prof.highestLevel || 0) + 1}  |  K: ${prof.totalKills || 0}`;
-          this._neonText(ctx, statsStr, cardX + 18, cy + statsOff, '#667799', 11, 'left');
-          // Rename button — right side of card
-          const rbW = 72, rbH = Math.max(22, cardH * 0.32);
-          const rbX = cardX + cardW - rbW - 10, rbY = cy + cardH / 2 - rbH / 2;
-          const slotIdx = i;
-          this._button(ctx, 'RENAME', rbX, rbY, rbW, rbH, '#556677', () => { this._startRename(slotIdx); });
-        } else {
-          this._neonText(ctx, `SLOT ${i + 1} — EMPTY`, cardX + 18, cy + nameOff, '#446688', 15, 'left');
-          this._neonText(ctx, 'TAP TO CREATE', cardX + 18, cy + statsOff, '#334455', 11, 'left');
-        }
-
-        const slotIdx = i;
-        this._addZone(cardX, cy, cardW - 92, cardH, () => {
-          this.profiles.active = slotIdx;
-          this.profiles.getOrCreate(slotIdx);
-          this.setState('menu');
-        });
-        this._addZone(cardX, cy, cardW, cardH, () => {}, true, i);
-      }
+    // Error message
+    if (this._authError) {
+      this._neonText(ctx, this._authError, W / 2, passY + inputH, '#ff4444', Math.min(12, H * 0.028));
     }
+
+    const btnW = Math.min(inputW * 0.48, 130);
+    const btnH = Math.max(36, H * 0.08);
+    const btnY = passY + inputH + (this._authError ? 38 : 20);
+
+    if (isSignUp) {
+      this._button(ctx, 'CREATE', inputX, btnY, btnW, btnH, '#00ffff', () => this._doSignUp());
+      this._button(ctx, 'BACK', inputX + inputW - btnW, btnY, btnW, btnH, '#446688', () => {
+        this._authMode  = 'signin';
+        this._authError = '';
+      });
+    } else {
+      this._button(ctx, 'SIGN IN', inputX, btnY, btnW, btnH, '#00ffff', () => this._doSignIn());
+      this._button(ctx, 'NEW ACCOUNT', inputX + inputW - btnW, btnY, btnW, btnH, '#8888ff', () => {
+        this._authMode  = 'signup';
+        this._authError = '';
+      });
+    }
+  }
+
+  _drawVerifyEmail(ctx) {
+    const { W, H } = this;
+    this._neonText(ctx, 'CHECK YOUR EMAIL', W / 2, H * 0.28, '#00ffff', Math.min(24, H * 0.065));
+    this._neonText(ctx, 'Click the verification link we sent to:', W / 2, H * 0.4, '#888888', Math.min(13, H * 0.034));
+    this._neonText(ctx, this._pendingEmail || '', W / 2, H * 0.48, '#8888ff', Math.min(14, H * 0.036));
+    this._neonText(ctx, 'Then return here to sign in.', W / 2, H * 0.56, '#556677', Math.min(12, H * 0.03));
+
+    const btnW = Math.min(W * 0.4, 180);
+    const btnH = Math.max(34, H * 0.08);
+
+    this._button(ctx, 'RESEND EMAIL', W / 2 - btnW / 2, H * 0.68, btnW, btnH, '#ff8844', () => this._doResendVerification());
+    this._button(ctx, 'BACK TO SIGN IN', W / 2 - btnW / 2, H * 0.8, btnW, btnH, '#446688', () => {
+      this._doSignOut();
+    });
+  }
+
+  _drawLeaderboard(ctx) {
+    const { W, H } = this;
+    this._neonText(ctx, 'ALL-TIME SCORES', W / 2, H * 0.1, '#ffff44', Math.min(26, H * 0.065));
+
+    const entries = this.profiles.leaderboard;
+    if (entries.length === 0) {
+      this._neonText(ctx, 'No scores yet — play a game!', W / 2, H / 2, '#446688', 15);
+    } else {
+      const rowH = Math.min(36, (H * 0.7) / entries.length);
+      const startY = H * 0.22;
+      const colors = ['#ffff44', '#aaaaff', '#ff8844'];
+
+      entries.forEach((e, i) => {
+        const y   = startY + i * rowH;
+        const col = colors[Math.min(i, colors.length - 1)];
+        const rank = `${i + 1}.`;
+        this._neonText(ctx, rank,              W * 0.18, y, col, Math.min(rowH * 0.52, 16), 'right');
+        this._neonText(ctx, e.name,            W * 0.22, y, col, Math.min(rowH * 0.52, 16), 'left');
+        this._neonText(ctx, String(e.score),   W * 0.78, y, col, Math.min(rowH * 0.52, 16), 'right');
+        this._neonText(ctx, `LV${e.level + 1}`,W * 0.82, y, '#667799', Math.min(rowH * 0.44, 13), 'left');
+      });
+    }
+
+    const btnW = Math.min(W * 0.4, 180);
+    const btnH = Math.max(34, H * 0.08);
+    this._button(ctx, 'BACK', W / 2 - btnW / 2, H * 0.88, btnW, btnH, '#446688', () => this.setState('menu'));
   }
 
   _drawPhaseSelect(ctx) {
@@ -2197,7 +2315,7 @@ class Game {
     for (let ph = 0; ph < 5; ph++) {
       const pd = PHASES_DATA[ph];
       const cy = startY + ph * (tileH + tileGap);
-      const unlockedPhases = activeProf ? activeProf.unlockedPhases : [true, false, false, false, false];
+      const unlockedPhases = activeProf ? activeProf.unlocked_phases : [true, false, false, false, false];
       const unlocked = unlockedPhases ? (unlockedPhases[ph] || ph === 0) : (ph === 0);
 
       const nameOffY = Math.round(tileH * 0.42);
@@ -2256,19 +2374,19 @@ class Game {
     const activeProf = this.profiles.getActive();
     if (activeProf) {
       this._neonText(ctx, activeProf.name, W / 2, H * 0.42, '#00ffff', Math.min(15, H * 0.034));
-      this._neonText(ctx, `HI: ${activeProf.highScore || 0}  |  KILLS: ${activeProf.totalKills || 0}`, W / 2, H * 0.5, '#667799', 12);
+      this._neonText(ctx, `HI: ${activeProf.high_score || 0}  |  KILLS: ${activeProf.total_kills || 0}`, W / 2, H * 0.5, '#667799', 12);
     }
 
     const btnW = Math.min(W * 0.6, 280);
     // Dynamic button height + positions that can't overlap regardless of orientation
     const btnH = Math.min(52, Math.max(36, H * 0.1));
     const btnGap = Math.max(6, H * 0.018);
-    const totalBtnsH = 4 * btnH + 3 * btnGap;
+    const totalBtnsH = 5 * btnH + 4 * btnGap;
     const btnsStartY = Math.min(H * 0.54, H * 0.96 - totalBtnsH);
     const btnX = W / 2 - btnW / 2;
 
     // PLAY button: start from beginning of highest unlocked phase
-    const highestPhase = activeProf ? this.profiles.firstUnlockedPhase(this.profiles.active) : 0;
+    const highestPhase = activeProf ? this.profiles.firstUnlockedPhase() : 0;
     this._button(ctx, 'PLAY', btnX, btnsStartY, btnW, btnH, '#00ffff', () => {
       this.startGame(PHASES_DATA[highestPhase].start);
     });
@@ -2277,8 +2395,8 @@ class Game {
       this.setState('phase_select');
     });
 
-    this._button(ctx, 'CHANGE PROFILE', btnX, btnsStartY + 2 * (btnH + btnGap), btnW, btnH, '#8888ff', () => {
-      this.setState('profile_select');
+    this._button(ctx, 'SCORES', btnX, btnsStartY + 2 * (btnH + btnGap), btnW, btnH, '#ffff44', () => {
+      this.profiles.loadLeaderboard().then(() => this.setState('leaderboard'));
     });
 
     // Phone controller button (orange — indicates secondary/device feature)
@@ -2288,8 +2406,14 @@ class Game {
       this._startPairing();
     });
 
-    // Controls hint
-    this._neonText(ctx, 'WASD / LEFT STICK: MOVE   ·   IJKL / RIGHT STICK / MOUSE: SHOOT', W / 2, H - 14, '#334455', 10);
+    // RENAME button (5th)
+    this._button(ctx, 'RENAME', btnX, btnsStartY + 4 * (btnH + btnGap), btnW, btnH, '#556677', () => {
+      this._startRename();
+    });
+
+    // Sign out hint + clickable zone
+    this._neonText(ctx, `${activeProf ? activeProf.name : ''}  ·  SIGN OUT`, W / 2, H - 14, '#334455', 10);
+    this._addZone(W / 2 + 20, H - 26, 100, 20, () => this._doSignOut());
   }
 
   // ---------------------------------------------------------------------------
