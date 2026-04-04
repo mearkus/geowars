@@ -1785,6 +1785,20 @@ class Game {
     this.setState('auth');
   }
 
+  _doGuestPlay() {
+    // Set a temporary in-memory profile — no DB calls, scores not saved
+    this.profiles.profile = {
+      name: 'GUEST',
+      high_score: 0,
+      highest_level: 0,
+      total_kills: 0,
+      total_games: 0,
+      unlocked_phases: [true, false, false, false, false],
+    };
+    this.profiles.userId = null; // keeps submitScore / updateActive as no-ops
+    this.setState('menu');
+  }
+
   // ---------------------------------------------------------------------------
   // Game flow methods
   // ---------------------------------------------------------------------------
@@ -2244,6 +2258,11 @@ class Game {
         this._authError = '';
       });
     }
+
+    // Guest play — always shown, below the main buttons
+    const guestY = btnY + btnH + Math.max(10, H * 0.02);
+    this._button(ctx, 'PLAY AS GUEST', inputX, guestY, inputW, btnH, '#445544', () => this._doGuestPlay());
+    this._neonText(ctx, 'scores not saved', W / 2, guestY + btnH + 10, '#334455', Math.min(11, H * 0.025));
   }
 
   _drawVerifyEmail(ctx) {
