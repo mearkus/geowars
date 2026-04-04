@@ -2399,7 +2399,7 @@ class Game {
 // =============================================================================
 // Initialization
 // =============================================================================
-window.addEventListener('DOMContentLoaded', () => new Game());
+window.addEventListener('DOMContentLoaded', () => { window._game = new Game(); });
 
 </script>
 </body>
