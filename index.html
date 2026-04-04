@@ -2104,9 +2104,13 @@ class Game {
         const statsY = cardsY + cardH * 0.62;
         if (prof) {
           this._neonText(ctx, prof.name, cx + cardW / 2, nameY, color, Math.min(15, cardW * 0.065));
-          const statsStr = `HI: ${prof.highScore || 0}\nLV: ${(prof.highestLevel || 0) + 1}`;
           this._neonText(ctx, `HI ${prof.highScore || 0}`, cx + cardW / 2, statsY, '#667799', Math.min(11, cardW * 0.048));
           this._neonText(ctx, `LV ${(prof.highestLevel || 0) + 1}  K ${prof.totalKills || 0}`, cx + cardW / 2, statsY + 16, '#667799', Math.min(10, cardW * 0.044));
+          // Rename button — bottom of card
+          const rbW = Math.min(64, cardW * 0.36), rbH = Math.max(18, cardH * 0.18);
+          const rbX = cx + cardW / 2 - rbW / 2, rbY = cardsY + cardH - rbH - 6;
+          const slotIdx = i;
+          this._button(ctx, 'RENAME', rbX, rbY, rbW, rbH, '#556677', () => { this._startRename(slotIdx); });
         } else {
           this._neonText(ctx, `SLOT ${i + 1}`, cx + cardW / 2, nameY, '#446688', Math.min(14, cardW * 0.06));
           this._neonText(ctx, 'EMPTY', cx + cardW / 2, statsY, '#334455', Math.min(11, cardW * 0.048));
@@ -2126,7 +2130,6 @@ class Game {
       const titleY = H * 0.1;
       this._neonText(ctx, 'GEO WARS', W / 2, titleY, '#00ffff', titleSize);
       this._neonText(ctx, 'SELECT PROFILE', W / 2, titleY + titleSize + 8, '#8888ff', 18);
-      this._neonText(ctx, 'HOLD CARD TO RENAME', W / 2, titleY + titleSize + 30, '#445566', 12);
 
       const cardW = Math.min(W * 0.88, 380);
       const cardH = Math.max(72, H * 0.12);
@@ -2144,19 +2147,24 @@ class Game {
 
         this._neonRect(ctx, cardX, cy, cardW, cardH, color);
 
-        const nameOff = Math.round(cardH * 0.32);
-        const statsOff = Math.round(cardH * 0.72);
+        const nameOff = Math.round(cardH * 0.38);
+        const statsOff = Math.round(cardH * 0.65);
         if (prof) {
           this._neonText(ctx, prof.name, cardX + 18, cy + nameOff, color, 17, 'left');
-          const statsStr = `HI: ${prof.highScore || 0}  |  LEVEL: ${(prof.highestLevel || 0) + 1}  |  KILLS: ${prof.totalKills || 0}`;
+          const statsStr = `HI: ${prof.highScore || 0}  |  LV: ${(prof.highestLevel || 0) + 1}  |  K: ${prof.totalKills || 0}`;
           this._neonText(ctx, statsStr, cardX + 18, cy + statsOff, '#667799', 11, 'left');
+          // Rename button — right side of card
+          const rbW = 72, rbH = Math.max(22, cardH * 0.32);
+          const rbX = cardX + cardW - rbW - 10, rbY = cy + cardH / 2 - rbH / 2;
+          const slotIdx = i;
+          this._button(ctx, 'RENAME', rbX, rbY, rbW, rbH, '#556677', () => { this._startRename(slotIdx); });
         } else {
           this._neonText(ctx, `SLOT ${i + 1} — EMPTY`, cardX + 18, cy + nameOff, '#446688', 15, 'left');
-          this._neonText(ctx, 'TAP TO CREATE  |  HOLD TO RENAME', cardX + 18, cy + statsOff, '#334455', 11, 'left');
+          this._neonText(ctx, 'TAP TO CREATE', cardX + 18, cy + statsOff, '#334455', 11, 'left');
         }
 
         const slotIdx = i;
-        this._addZone(cardX, cy, cardW, cardH, () => {
+        this._addZone(cardX, cy, cardW - 92, cardH, () => {
           this.profiles.active = slotIdx;
           this.profiles.getOrCreate(slotIdx);
           this.setState('menu');
