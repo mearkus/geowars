@@ -7,6 +7,8 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#000008">
   <title>Geo Wars</title>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
@@ -317,6 +319,7 @@ class InputManager {
     this.mouse = { pos: new Vec2(), down: false };
     this.leftStick = { id: null, origin: new Vec2(), pos: new Vec2() };
     this.rightStick = { id: null, origin: new Vec2(), pos: new Vec2() };
+    this._remoteInput = null; // { lx, ly, rx, ry, s } when phone controller is connected
     this._bind();
   }
 
@@ -410,6 +413,15 @@ class InputManager {
   }
 
   update(playerPos) {
+    // Phone controller takes priority over all local input
+    if (this._remoteInput !== null) {
+      const r = this._remoteInput;
+      this.left.set(r.lx, r.ly);
+      this.right.set(r.rx, r.ry);
+      this.shooting = r.s === 1;
+      return;
+    }
+
     const MAX_RADIUS = Math.min(Math.max(65, Math.min(this.canvas.width, this.canvas.height) * 0.13), 90);
 
     // Left stick / WASD
@@ -483,6 +495,70 @@ class InputManager {
 
   getRightStick() {
     return this.rightStick.id !== null ? this.rightStick : null;
+  }
+
+  setRemoteInput(msg) {
+    this._remoteInput = msg; // null reverts to local input
+  }
+}
+
+// =============================================================================
+// PeerManager — WebRTC DataChannel for phone-as-controller
+// =============================================================================
+class PeerManager {
+  constructor(onInput, onConnect, onDisconnect) {
+    this._onInput      = onInput;
+    this._onConnect    = onConnect;
+    this._onDisconnect = onDisconnect;
+    this.peerId   = null;
+    this.conn     = null;
+    this.connected = false;
+    this._peer    = null;
+    this._init();
+  }
+
+  _init() {
+    this._peer = new Peer();
+    this._peer.on('open', id => {
+      this.peerId = id;
+      this._onInput(null); // signal "peer ready" so UI can render QR
+    });
+    this._peer.on('connection', conn => {
+      if (this.conn) this.conn.close();
+      this.conn = conn;
+      conn.on('open', () => {
+        this.connected = true;
+        this._onConnect();
+      });
+      conn.on('data', msg => {
+        if (this.connected) this._onInput(msg);
+      });
+      conn.on('close', () => {
+        this.connected = false;
+        this.conn = null;
+        this._onDisconnect();
+      });
+      conn.on('error', () => {
+        this.connected = false;
+        this.conn = null;
+        this._onDisconnect();
+      });
+    });
+    this._peer.on('error', () => {
+      // Signaling unavailable — degrade gracefully, local input still works
+      this.peerId = '__error__';
+      this._onInput(null);
+    });
+  }
+
+  controllerURL() {
+    if (!this.peerId || this.peerId === '__error__') return null;
+    return `${location.origin}${location.pathname}?controller=${this.peerId}`;
+  }
+
+  destroy() {
+    if (this.conn) this.conn.close();
+    if (this._peer) this._peer.destroy();
   }
 }
 
@@ -1474,6 +1550,12 @@ class Game {
     this._longPressHandled = false;
     this.renamingSlot = -1;
 
+    // Phone controller
+    this.peerManager    = null;
+    this.peerConnected  = false;
+    this._qrContainer   = null;
+    this._connLostTimer = 0;
+
     // Level clear state
     this.bonusAwarded = 0;
     this.isPhaseEnd = false;
@@ -1601,6 +1683,7 @@ class Game {
   }
 
   setState(s) {
+    if (this.state === 'pairing' && s !== 'pairing') this._hidePairingQR();
     this.state = s;
     this.stateTimer = 0;
   }
@@ -1775,7 +1858,11 @@ class Game {
           this.startLevel(PHASES_DATA[nextPhase].start);
         }
       }
+    } else if (this.state === 'pairing') {
+      // Waiting for phone — PeerManager callbacks drive the transition
     }
+
+    if (this._connLostTimer > 0) this._connLostTimer -= dt;
 
     this.particles.update(dt);
     this.screenShake *= Math.pow(0.04, dt);
@@ -1933,6 +2020,7 @@ class Game {
       case 'profile_select': this._drawProfileSelect(ctx); break;
       case 'phase_select':   this._drawPhaseSelect(ctx);   break;
       case 'menu':           this._drawMenu(ctx);           break;
+      case 'pairing':        this._drawPairing(ctx);        break;
       case 'playing':        this._drawPlaying(ctx);        break;
       case 'level_clear':
         this._drawPlaying(ctx);
@@ -2167,8 +2255,8 @@ class Game {
     // Dynamic button height + positions that can't overlap regardless of orientation
     const btnH = Math.min(52, Math.max(36, H * 0.1));
     const btnGap = Math.max(6, H * 0.018);
-    const totalBtnsH = 3 * btnH + 2 * btnGap;
-    const btnsStartY = Math.min(H * 0.58, H * 0.96 - totalBtnsH);
+    const totalBtnsH = 4 * btnH + 3 * btnGap;
+    const btnsStartY = Math.min(H * 0.54, H * 0.96 - totalBtnsH);
     const btnX = W / 2 - btnW / 2;
 
     // PLAY button: start from beginning of highest unlocked phase
@@ -2177,7 +2265,7 @@ class Game {
       this.startGame(PHASES_DATA[highestPhase].start);
     });
 
-    this._button(ctx, 'LEVEL SELECT', btnX, btnsStartY + btnH + btnGap, btnW, btnH, '#44ff88', () => {
+    this._button(ctx, 'LEVEL SELECT', btnX, btnsStartY + (btnH + btnGap), btnW, btnH, '#44ff88', () => {
       this.setState('phase_select');
     });
 
@@ -2185,8 +2273,108 @@ class Game {
       this.setState('profile_select');
     });
 
+    // Phone controller button (orange — indicates secondary/device feature)
+    const phoneLabel = this.peerConnected ? 'PHONE CTRL ●' : 'PHONE CTRL';
+    const phoneColor = this.peerConnected ? '#00ff88' : '#ff8844';
+    this._button(ctx, phoneLabel, btnX, btnsStartY + 3 * (btnH + btnGap), btnW, btnH, phoneColor, () => {
+      this._startPairing();
+    });
+
     // Controls hint
     this._neonText(ctx, 'WASD / LEFT STICK: MOVE   ·   IJKL / RIGHT STICK / MOUSE: SHOOT', W / 2, H - 14, '#334455', 10);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phone controller methods
+  // ---------------------------------------------------------------------------
+
+  _startPairing() {
+    if (!this.peerManager) {
+      this.peerManager = new PeerManager(
+        (msg) => {
+          // null = peer opened (QR ready); object = live input data
+          if (msg !== null) this.input.setRemoteInput(msg);
+        },
+        () => {
+          // Phone connected
+          this.peerConnected = true;
+          if (this.state === 'pairing') this.setState('menu');
+        },
+        () => {
+          // Phone disconnected
+          this.peerConnected = false;
+          this.input.setRemoteInput(null);
+          this._connLostTimer = 3;
+        }
+      );
+    }
+    this.setState('pairing');
+  }
+
+  _hidePairingQR() {
+    if (this._qrContainer) this._qrContainer.style.display = 'none';
+  }
+
+  _ensureQRCode() {
+    const url = this.peerManager ? this.peerManager.controllerURL() : null;
+    if (!url) return;
+
+    if (!this._qrContainer) {
+      this._qrContainer = document.createElement('div');
+      this._qrContainer.style.cssText = [
+        'position:fixed', 'z-index:20',
+        'top:50%', 'left:50%',
+        'transform:translate(-50%,-10%)',
+        'background:#000008',
+        'border:1px solid #00ffff44',
+        'padding:10px',
+        'display:flex', 'align-items:center', 'justify-content:center'
+      ].join(';');
+      document.body.appendChild(this._qrContainer);
+    }
+
+    if (this._qrContainer.dataset.url !== url) {
+      this._qrContainer.innerHTML = '';
+      this._qrContainer.dataset.url = url;
+      const qrSize = Math.min(180, this.W * 0.38, this.H * 0.32);
+      new QRCode(this._qrContainer, {
+        text: url,
+        width:  qrSize,
+        height: qrSize,
+        colorDark:  '#00ffff',
+        colorLight: '#000008',
+        correctLevel: QRCode.CorrectLevel.M
+      });
+    }
+    this._qrContainer.style.display = 'flex';
+  }
+
+  _drawPairing(ctx) {
+    const { W, H } = this;
+    this._neonText(ctx, 'PHONE CONTROLLER', W / 2, H * 0.1, '#ff8844', Math.min(24, H * 0.065));
+
+    if (!this.peerManager || !this.peerManager.peerId) {
+      const dots = '.'.repeat(1 + Math.floor(this.stateTimer * 2) % 3);
+      this._neonText(ctx, `CONNECTING${dots}`, W / 2, H / 2, '#8888ff', 18);
+    } else if (this.peerManager.peerId === '__error__') {
+      this._neonText(ctx, 'SIGNALING UNAVAILABLE', W / 2, H * 0.42, '#ff4444', 16);
+      this._neonText(ctx, 'Check your connection and try again', W / 2, H * 0.52, '#667799', 12);
+    } else {
+      this._neonText(ctx, 'SCAN WITH YOUR PHONE', W / 2, H * 0.22, '#ffffff', Math.min(15, H * 0.04));
+      this._ensureQRCode();
+      // Short URL below QR (the QR DOM element sits over this area)
+      const url = this.peerManager.controllerURL();
+      if (url) {
+        const display = url.replace('https://', '').replace('http://', '');
+        this._neonText(ctx, display.length > 40 ? display.substring(0, 40) + '…' : display, W / 2, H * 0.8, '#334455', 9);
+      }
+    }
+
+    const btnW = Math.min(W * 0.4, 180);
+    const btnH = Math.max(34, H * 0.08);
+    this._button(ctx, 'BACK', W / 2 - btnW / 2, H * 0.88, btnW, btnH, '#446688', () => {
+      this.setState('menu');
+    });
   }
 
   _drawPlaying(ctx) {
@@ -2296,6 +2484,36 @@ class Game {
     const ld = getLevelData(this.currentLevelIdx);
     const phData = PHASES_DATA[Math.min(ld.phase, 4)];
     this._neonText(ctx, `LVL ${this.currentLevelIdx + 1} · ${phData.name}`, W - 16, 56, phData.color, 12, 'right');
+
+    // Phone controller status dot (top-right corner)
+    if (this.peerManager) {
+      ctx.save();
+      const dotR = 5;
+      const dotX = W - 10;
+      const dotY = 72;
+      if (this.peerConnected) {
+        ctx.fillStyle = '#00ff88';
+        ctx.shadowColor = '#00ff88';
+        ctx.shadowBlur = 8;
+      } else {
+        const blink = Math.floor(this.stateTimer * 2) % 2 === 0;
+        ctx.fillStyle = blink ? '#ff8800' : '#553300';
+        ctx.shadowColor = '#ff8800';
+        ctx.shadowBlur = blink ? 6 : 0;
+      }
+      ctx.beginPath();
+      ctx.arc(dotX, dotY, dotR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // "CTRL LOST" flash when phone drops mid-game
+    if (this._connLostTimer > 0) {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, this._connLostTimer);
+      this._neonText(ctx, 'CTRL LOST', W / 2, 22, '#ff4444', 14);
+      ctx.restore();
+    }
   }
 
   _drawJoysticks(ctx) {
@@ -2458,9 +2676,240 @@ class Game {
 }
 
 // =============================================================================
+// Controller mode — rendered when ?controller=PEERID is in the URL
+// =============================================================================
+function _initControllerMode(hostPeerId) {
+  // Inject CSS
+  const style = document.createElement('style');
+  style.textContent = `
+    #ctrl-overlay {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: row;
+      touch-action: none; user-select: none;
+      -webkit-user-select: none;
+      background: #000008;
+    }
+    #ctrl-status {
+      position: fixed; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      color: #00ffff; font-family: 'Courier New', monospace;
+      font-size: 18px; text-align: center; line-height: 1.6;
+      pointer-events: none; z-index: 10; white-space: pre;
+    }
+    .ctrl-zone {
+      flex: 1; position: relative;
+      border: 1px solid rgba(0,255,255,0.08);
+      display: none;
+    }
+    .ctrl-zone.left  { border-right: 1px solid rgba(0,255,255,0.15); }
+    .ctrl-zone.right { border-left:  1px solid rgba(0,255,255,0.15); }
+    .ctrl-label {
+      position: absolute; top: 10px; width: 100%;
+      text-align: center; color: rgba(0,255,255,0.35);
+      font-family: 'Courier New', monospace; font-size: 12px;
+      pointer-events: none;
+    }
+    .ctrl-ring {
+      position: absolute; border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.2);
+      background: rgba(255,255,255,0.03);
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+    }
+    .ctrl-thumb {
+      position: absolute; border-radius: 50%;
+      background: rgba(255,255,255,0.3);
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+    }
+    #ctrl-conn-dot {
+      position: fixed; top: 14px; right: 14px;
+      width: 10px; height: 10px; border-radius: 50%;
+      background: #ff8800;
+      box-shadow: 0 0 8px #ff8800;
+      animation: blink 1s step-start infinite;
+    }
+    #ctrl-conn-dot.connected {
+      background: #00ff88; box-shadow: 0 0 8px #00ff88;
+      animation: none;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+  `;
+  document.head.appendChild(style);
+
+  const overlay = document.createElement('div');
+  overlay.id = 'ctrl-overlay';
+
+  const statusEl = document.createElement('div');
+  statusEl.id = 'ctrl-status';
+  statusEl.textContent = 'CONNECTING…';
+
+  const leftZone  = document.createElement('div');
+  leftZone.className = 'ctrl-zone left';
+  const rightZone = document.createElement('div');
+  rightZone.className = 'ctrl-zone right';
+
+  const leftLabel  = document.createElement('div');
+  leftLabel.className = 'ctrl-label';
+  leftLabel.textContent = 'MOVE';
+  const rightLabel = document.createElement('div');
+  rightLabel.className = 'ctrl-label';
+  rightLabel.textContent = 'AIM / FIRE';
+
+  leftZone.appendChild(leftLabel);
+  rightZone.appendChild(rightLabel);
+
+  const connDot = document.createElement('div');
+  connDot.id = 'ctrl-conn-dot';
+
+  overlay.appendChild(leftZone);
+  overlay.appendChild(rightZone);
+  overlay.appendChild(statusEl);
+  overlay.appendChild(connDot);
+  document.body.appendChild(overlay);
+
+  // Joystick state
+  const RING_R  = 60;  // visual ring radius px
+  const THUMB_R = 22;  // thumb radius px
+  const MAX_R   = 52;  // normalization radius
+
+  function makeJoystick(zone) {
+    const ring  = document.createElement('div');
+    ring.className = 'ctrl-ring';
+    ring.style.width  = ring.style.height = (RING_R * 2) + 'px';
+    const thumb = document.createElement('div');
+    thumb.className = 'ctrl-thumb';
+    thumb.style.width  = thumb.style.height = (THUMB_R * 2) + 'px';
+    zone.appendChild(ring);
+    zone.appendChild(thumb);
+    return { ring, thumb, id: null, ox: 0, oy: 0, x: 0, y: 0 };
+  }
+
+  const ljs = makeJoystick(leftZone);
+  const rjs = makeJoystick(rightZone);
+  let conn = null;
+
+  function send() {
+    if (!conn) return;
+    conn.send({
+      lx: ljs.x, ly: ljs.y,
+      rx: rjs.x, ry: rjs.y,
+      s:  (Math.sqrt(rjs.x * rjs.x + rjs.y * rjs.y) > 0.25) ? 1 : 0
+    });
+  }
+
+  function updateJoystick(js, cx, cy) {
+    let dx = cx - js.ox;
+    let dy = cy - js.oy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist > MAX_R) { dx = dx / dist * MAX_R; dy = dy / dist * MAX_R; }
+    js.x = dx / MAX_R;
+    js.y = dy / MAX_R;
+    // Move thumb visually (clamped)
+    const vx = js.ox + dx;
+    const vy = js.oy + dy;
+    js.thumb.style.left = vx + 'px';
+    js.thumb.style.top  = vy + 'px';
+  }
+
+  function zonePos(zone, touch) {
+    const r = zone.getBoundingClientRect();
+    return { x: touch.clientX - r.left, y: touch.clientY - r.top };
+  }
+
+  function handleTS(e) {
+    for (const t of e.changedTouches) {
+      [{ zone: leftZone, js: ljs }, { zone: rightZone, js: rjs }].forEach(({ zone, js }) => {
+        const r = zone.getBoundingClientRect();
+        if (t.clientX >= r.left && t.clientX <= r.right &&
+            t.clientY >= r.top  && t.clientY <= r.bottom && js.id === null) {
+          js.id = t.identifier;
+          const p = zonePos(zone, t);
+          js.ox = p.x; js.oy = p.y;
+          // Position ring at touch point
+          js.ring.style.left  = p.x + 'px';
+          js.ring.style.top   = p.y + 'px';
+          js.ring.style.display = 'block';
+          js.thumb.style.left = p.x + 'px';
+          js.thumb.style.top  = p.y + 'px';
+          js.thumb.style.display = 'block';
+          js.x = 0; js.y = 0;
+        }
+      });
+    }
+    send();
+  }
+
+  function handleTM(e) {
+    for (const t of e.changedTouches) {
+      if (t.identifier === ljs.id) {
+        const p = zonePos(leftZone, t);
+        updateJoystick(ljs, p.x, p.y);
+      } else if (t.identifier === rjs.id) {
+        const p = zonePos(rightZone, t);
+        updateJoystick(rjs, p.x, p.y);
+      }
+    }
+    send();
+  }
+
+  function handleTE(e) {
+    for (const t of e.changedTouches) {
+      if (t.identifier === ljs.id) {
+        ljs.id = null; ljs.x = 0; ljs.y = 0;
+        ljs.ring.style.display = ljs.thumb.style.display = 'none';
+      } else if (t.identifier === rjs.id) {
+        rjs.id = null; rjs.x = 0; rjs.y = 0;
+        rjs.ring.style.display = rjs.thumb.style.display = 'none';
+      }
+    }
+    send();
+  }
+
+  overlay.addEventListener('touchstart',  handleTS, { passive: true });
+  overlay.addEventListener('touchmove',   handleTM, { passive: true });
+  overlay.addEventListener('touchend',    handleTE, { passive: true });
+  overlay.addEventListener('touchcancel', handleTE, { passive: true });
+
+  // PeerJS connection to host
+  const peer = new Peer();
+  peer.on('open', () => {
+    const c = peer.connect(hostPeerId, { reliable: false, serialization: 'json' });
+    c.on('open', () => {
+      conn = c;
+      statusEl.style.display = 'none';
+      leftZone.style.display = rightZone.style.display = 'block';
+      connDot.classList.add('connected');
+    });
+    c.on('close', () => {
+      conn = null;
+      connDot.classList.remove('connected');
+      statusEl.style.display = 'block';
+      statusEl.textContent = 'DISCONNECTED\nRefresh to reconnect';
+      leftZone.style.display = rightZone.style.display = 'none';
+    });
+    c.on('error', () => {
+      statusEl.textContent = 'CONNECTION FAILED\nRefresh & scan again';
+    });
+  });
+  peer.on('error', () => {
+    statusEl.textContent = 'PEER ERROR\nCheck your connection';
+  });
+}
+
+// =============================================================================
 // Initialization
 // =============================================================================
-window.addEventListener('DOMContentLoaded', () => { window._game = new Game(); });
+window.addEventListener('DOMContentLoaded', () => {
+  const hostId = new URLSearchParams(location.search).get('controller');
+  if (hostId) {
+    document.getElementById('c').style.display = 'none';
+    document.getElementById('nameInput').style.display = 'none';
+    _initControllerMode(hostId);
+  } else {
+    window._game = new Game();
+  }
+});
 
 </script>
 </body>
