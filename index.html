@@ -1614,6 +1614,7 @@ class ProfileManager {
     // Try to fetch existing profile
     let { data } = await _sb.from('profiles').select('*').eq('id', this.userId).single();
 
+    this.isNewUser = !data;
     if (!data) {
       // First login — create profile row
       const res = await _sb.from('profiles').insert({
@@ -1648,6 +1649,12 @@ class ProfileManager {
       score,
       level
     });
+    await this.loadLeaderboard();
+  }
+
+  async submitGuestScore(name, score, level) {
+    if (!_sb) return;
+    await _sb.from('scores').insert({ user_id: null, name, score, level });
     await this.loadLeaderboard();
   }
 
@@ -1797,12 +1804,14 @@ class Game {
       this.pressSlot = -1;
     });
 
-    // Name input confirm
+    // Name input confirm — shared by rename, initials entry, and username setup
     this.nameInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter') this._confirmRename();
+      if (e.key === 'Enter') this._confirmNameInput();
     });
     this.nameInput.addEventListener('blur', () => {
-      if (this.renamingSlot >= 0) this._confirmRename();
+      if (this.renamingSlot >= 0 || this.state === 'enter_initials' || this.state === 'set_username') {
+        this._confirmNameInput();
+      }
     });
 
     // Orientation change (fires before resize on some iOS)
@@ -1840,7 +1849,7 @@ class Game {
       this._longPressHandled = false;
       return;
     }
-    if (this.renamingSlot >= 0) return;
+    if (this.renamingSlot >= 0 || this.state === 'enter_initials' || this.state === 'set_username') return;
     this.audio.resume();
     const pos = this._canvasPos(e);
     for (const zone of this.clickZones) {
@@ -1856,18 +1865,50 @@ class Game {
   }
 
   _startRename() {
-    this.renamingSlot = 0; // single active profile
+    this.renamingSlot = 0;
+    this.nameInput.maxLength   = 12;
+    this.nameInput.placeholder = 'ENTER NAME';
     this.nameInput.style.display = 'block';
     this.nameInput.value = this.profiles.profile?.name ?? '';
     this.nameInput.focus();
     this.nameInput.select();
   }
 
-  _confirmRename() {
-    this.renamingSlot = -1;
+  _startInitialsInput() {
+    this.nameInput.maxLength   = 3;
+    this.nameInput.placeholder = 'AAA';
+    this.nameInput.value = '';
+    this.nameInput.style.display = 'block';
+    this.nameInput.focus();
+  }
+
+  _startUsernameInput() {
+    this.nameInput.maxLength   = 12;
+    this.nameInput.placeholder = 'ENTER NAME';
+    this.nameInput.value = '';
+    this.nameInput.style.display = 'block';
+    this.nameInput.focus();
+  }
+
+  _confirmNameInput() {
+    const val = this.nameInput.value.trim().toUpperCase();
     this.nameInput.style.display = 'none';
-    const name = this.nameInput.value.trim().toUpperCase().substring(0, 12) || 'PLAYER';
-    this.profiles.rename(name); // async fire-and-forget
+
+    if (this.state === 'enter_initials') {
+      const name  = val.substring(0, 3) || 'AAA';
+      const { score, level } = this._pendingGuestScore || { score: 0, level: 0 };
+      this.profiles.submitGuestScore(name, score, level); // fire-and-forget
+      this._pendingGuestScore = null;
+      this.setState('gameover');
+    } else if (this.state === 'set_username') {
+      const name = val.substring(0, 12) || 'PLAYER';
+      this.profiles.rename(name);
+      this.setState('menu');
+    } else if (this.renamingSlot >= 0) {
+      this.renamingSlot = -1;
+      const name = val.substring(0, 12) || 'PLAYER';
+      this.profiles.rename(name);
+    }
   }
 
   _showAuthOverlay() {
@@ -1899,8 +1940,18 @@ class Game {
     } else if (this.state === 'playing') {
       this.audio.stopMusic();
     }
+    // Keep leaderboard fresh whenever returning to menu
+    if (s === 'menu') {
+      this.profiles.loadLeaderboard();
+    }
     this.state = s;
     this.stateTimer = 0;
+    // Show name input for states that need text entry
+    if (s === 'enter_initials') {
+      setTimeout(() => this._startInitialsInput(), 80);
+    } else if (s === 'set_username') {
+      setTimeout(() => this._startUsernameInput(), 80);
+    }
   }
 
   async _checkSession() {
@@ -1908,7 +1959,7 @@ class Game {
     const { data: { session } } = await _sb.auth.getSession();
     if (session?.user?.email_confirmed_at) {
       await this.profiles.load(session);
-      this.setState('menu');
+      this.setState(this.profiles.isNewUser ? 'set_username' : 'menu');
     } else if (session) {
       this._pendingEmail = session.user.email;
       this.setState('verify_email');
@@ -1936,7 +1987,7 @@ class Game {
     await this.profiles.load(data.session);
     this._track('sign_in');
     this._track('session_start', { method: 'sign_in' });
-    this.setState('menu');
+    this.setState(this.profiles.isNewUser ? 'set_username' : 'menu');
   }
 
   async _doSignUp() {
@@ -2062,17 +2113,26 @@ class Game {
     const oldHighestLevel = prof ? (prof.highest_level || 0) : 0;
     this.isNewBest = this.score > oldHighScore;
 
-    if (prof) {
+    if (this.profiles.userId && prof) {
       const newHigh = Math.max(oldHighScore, this.score);
       const newLevel = Math.max(oldHighestLevel, this.currentLevelIdx);
       this.profiles.updateActive({ high_score: newHigh, highest_level: newLevel });
       this.profiles.submitScore(this.score, this.currentLevelIdx); // async fire-and-forget
+    } else if (prof) {
+      // Update in-memory best so subsequent guest games compare correctly
+      prof.high_score = Math.max(oldHighScore, this.score);
     }
 
     const phase = this.currentLevelIdx < 30 ? LEVELS_DATA[this.currentLevelIdx].phase : 4;
     this._track('game_over', { level: this.currentLevelIdx, phase, score: this.score, is_new_best: this.isNewBest });
 
-    this.setState('gameover');
+    if (this.profiles.userId) {
+      this.setState('gameover');
+    } else {
+      // Guest — collect initials then save score to leaderboard
+      this._pendingGuestScore = { score: this.score, level: this.currentLevelIdx };
+      this.setState('enter_initials');
+    }
   }
 
   _levelClear() {
@@ -2353,9 +2413,11 @@ class Game {
     this.grid.draw(ctx);
 
     switch (this.state) {
-      case 'auth':          this._drawAuth(ctx);         break;
-      case 'verify_email':  this._drawVerifyEmail(ctx);   break;
-      case 'leaderboard':   this._drawLeaderboard(ctx);   break;
+      case 'auth':           this._drawAuth(ctx);            break;
+      case 'verify_email':   this._drawVerifyEmail(ctx);     break;
+      case 'set_username':   this._drawSetUsername(ctx);     break;
+      case 'enter_initials': this._drawEnterInitials(ctx);   break;
+      case 'leaderboard':    this._drawLeaderboard(ctx);     break;
       case 'phase_select':   this._drawPhaseSelect(ctx);   break;
       case 'menu':           this._drawMenu(ctx);           break;
       case 'pairing':        this._drawPairing(ctx);        break;
@@ -2585,59 +2647,85 @@ class Game {
 
   _drawMenu(ctx) {
     const { W, H } = this;
-    const pulse = 0.9 + 0.1 * Math.sin(this.stateTimer * 2);
+    const isGuest  = !this.profiles.userId;
+    const activeProf = this.profiles.getActive();
 
+    // Title
+    const pulse = 0.9 + 0.1 * Math.sin(this.stateTimer * 2);
     ctx.save();
     ctx.globalAlpha = pulse;
-    this._neonText(ctx, 'GEO WARS', W / 2, H * 0.2, '#00ffff', Math.min(36, H * 0.06));
+    this._neonText(ctx, 'GEO WARS', W / 2, H * 0.10, '#00ffff', Math.min(36, H * 0.06));
     ctx.restore();
+    this._neonText(ctx, 'MOBILE EDITION', W / 2, H * 0.19, '#6666cc', Math.min(14, H * 0.032));
 
-    this._neonText(ctx, 'MOBILE EDITION', W / 2, H * 0.31, '#6666cc', Math.min(16, H * 0.036));
-
-    const activeProf = this.profiles.getActive();
-    if (activeProf) {
-      this._neonText(ctx, activeProf.name, W / 2, H * 0.42, '#00ffff', Math.min(15, H * 0.034));
-      this._neonText(ctx, `HI: ${activeProf.high_score || 0}  |  KILLS: ${activeProf.total_kills || 0}`, W / 2, H * 0.5, '#667799', 12);
+    // Mini leaderboard (top 5)
+    const entries = this.profiles.leaderboard.slice(0, 5);
+    this._neonText(ctx, 'HIGH SCORES', W / 2, H * 0.275, '#ffff44', Math.min(12, H * 0.026));
+    if (entries.length > 0) {
+      const rowH  = Math.min(26, (H * 0.20) / entries.length);
+      const startY = H * 0.325;
+      const entryColors = ['#ffff44', '#aaaaff', '#ff8844', '#88ffaa', '#ff88ff'];
+      entries.forEach((e, i) => {
+        const y   = startY + i * rowH;
+        const col = entryColors[i];
+        this._neonText(ctx, `${i + 1}.`,        W * 0.16, y, col, Math.min(rowH * 0.52, 13), 'right');
+        this._neonText(ctx, e.name,             W * 0.19, y, col, Math.min(rowH * 0.52, 13), 'left');
+        this._neonText(ctx, String(e.score),    W * 0.80, y, col, Math.min(rowH * 0.52, 13), 'right');
+        this._neonText(ctx, `LV${e.level + 1}`, W * 0.83, y, '#556677', Math.min(rowH * 0.44, 11), 'left');
+      });
+    } else {
+      this._neonText(ctx, 'NO SCORES YET', W / 2, H * 0.375, '#334455', Math.min(12, H * 0.026));
     }
 
-    const btnW = Math.min(W * 0.6, 280);
-    // Dynamic button height + positions that can't overlap regardless of orientation
-    const btnH = Math.min(52, Math.max(36, H * 0.1));
-    const btnGap = Math.max(6, H * 0.018);
-    const totalBtnsH = 6 * btnH + 5 * btnGap;
-    const btnsStartY = Math.min(H * 0.54, H * 0.96 - totalBtnsH);
-    const btnX = W / 2 - btnW / 2;
+    // Active player info
+    if (activeProf) {
+      const nameLabel = isGuest ? 'PLAYING AS GUEST' : activeProf.name;
+      const nameColor = isGuest ? '#556677' : '#00ffff';
+      this._neonText(ctx, nameLabel, W / 2, H * 0.555, nameColor, Math.min(14, H * 0.030));
+      if (!isGuest) {
+        this._neonText(ctx, `HI: ${activeProf.high_score || 0}  |  KILLS: ${activeProf.total_kills || 0}`, W / 2, H * 0.615, '#667799', 11);
+      }
+    }
 
-    // PLAY button: start from beginning of highest unlocked phase
+    // Buttons — guests get 5 (no rename), auth users get 6
+    const numBtns   = isGuest ? 5 : 6;
+    const btnW      = Math.min(W * 0.6, 280);
+    const btnH      = Math.min(48, Math.max(34, H * 0.085));
+    const btnGap    = Math.max(5, H * 0.014);
+    const totalH    = numBtns * btnH + (numBtns - 1) * btnGap;
+    const btnsStartY = Math.min(H * 0.645, H * 0.98 - totalH);
+    const btnX      = W / 2 - btnW / 2;
+
     const highestPhase = activeProf ? this.profiles.firstUnlockedPhase() : 0;
-    this._button(ctx, 'PLAY', btnX, btnsStartY, btnW, btnH, '#00ffff', () => {
+    let row = 0;
+    const nextY = () => btnsStartY + row++ * (btnH + btnGap);
+
+    this._button(ctx, 'PLAY', btnX, nextY(), btnW, btnH, '#00ffff', () => {
       this.startGame(PHASES_DATA[highestPhase].start);
     });
-
-    this._button(ctx, 'LEVEL SELECT', btnX, btnsStartY + (btnH + btnGap), btnW, btnH, '#44ff88', () => {
+    this._button(ctx, 'LEVEL SELECT', btnX, nextY(), btnW, btnH, '#44ff88', () => {
       this.setState('phase_select');
     });
-
-    this._button(ctx, 'SCORES', btnX, btnsStartY + 2 * (btnH + btnGap), btnW, btnH, '#ffff44', () => {
+    this._button(ctx, 'SCORES', btnX, nextY(), btnW, btnH, '#ffff44', () => {
       this.profiles.loadLeaderboard().then(() => { this._track('leaderboard_view'); this.setState('leaderboard'); });
     });
-
-    // Phone controller button (orange — indicates secondary/device feature)
     const phoneLabel = this.peerConnected ? 'PHONE CTRL ●' : 'PHONE CTRL';
     const phoneColor = this.peerConnected ? '#00ff88' : '#ff8844';
-    this._button(ctx, phoneLabel, btnX, btnsStartY + 3 * (btnH + btnGap), btnW, btnH, phoneColor, () => {
+    this._button(ctx, phoneLabel, btnX, nextY(), btnW, btnH, phoneColor, () => {
       this._startPairing();
     });
-
-    // RENAME button (5th)
-    this._button(ctx, 'RENAME', btnX, btnsStartY + 4 * (btnH + btnGap), btnW, btnH, '#556677', () => {
-      this._startRename();
-    });
-
-    // SIGN OUT button (6th)
-    this._button(ctx, 'SIGN OUT', btnX, btnsStartY + 5 * (btnH + btnGap), btnW, btnH, '#664444', () => {
-      this._doSignOut();
-    });
+    if (isGuest) {
+      this._button(ctx, 'SIGN IN', btnX, nextY(), btnW, btnH, '#4488cc', () => {
+        this.setState('auth');
+      });
+    } else {
+      this._button(ctx, 'RENAME', btnX, nextY(), btnW, btnH, '#556677', () => {
+        this._startRename();
+      });
+      this._button(ctx, 'SIGN OUT', btnX, nextY(), btnW, btnH, '#664444', () => {
+        this._doSignOut();
+      });
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -2982,6 +3070,32 @@ class Game {
 
     this._neonText(ctx, `CONTINUING IN ${Math.ceil(this.phaseClearTimer)}…`, W / 2, H / 2 + 110, '#555577', 14);
     ctx.restore();
+  }
+
+  _drawSetUsername(ctx) {
+    const { W, H } = this;
+    ctx.fillStyle = 'rgba(0,0,8,0.92)';
+    ctx.fillRect(0, 0, W, H);
+    this._neonText(ctx, 'WELCOME!', W / 2, H * 0.28, '#00ffff', Math.min(34, H * 0.065));
+    this._neonText(ctx, 'CHOOSE YOUR USERNAME', W / 2, H * 0.42, '#aaaaff', Math.min(16, H * 0.036));
+    this._neonText(ctx, '(TYPE AND PRESS ENTER)', W / 2, H * 0.55, '#446688', Math.min(12, H * 0.026));
+    this._neonText(ctx, 'UP TO 12 CHARACTERS', W / 2, H * 0.63, '#334455', Math.min(11, H * 0.022));
+  }
+
+  _drawEnterInitials(ctx) {
+    const { W, H } = this;
+    ctx.fillStyle = 'rgba(0,0,8,0.88)';
+    ctx.fillRect(0, 0, W, H);
+    this._neonText(ctx, 'GAME OVER', W / 2, H * 0.16, '#ff3333', Math.min(44, H * 0.075));
+    this._neonText(ctx, `SCORE: ${this._pendingGuestScore?.score ?? 0}`, W / 2, H * 0.30, '#ffffff', Math.min(26, H * 0.052));
+    if (this.isNewBest) {
+      const a = 0.6 + 0.4 * Math.abs(Math.sin(this.stateTimer * 4));
+      ctx.save(); ctx.globalAlpha = a;
+      this._neonText(ctx, 'NEW BEST!', W / 2, H * 0.39, '#ffff00', Math.min(20, H * 0.04));
+      ctx.restore();
+    }
+    this._neonText(ctx, 'ENTER YOUR INITIALS', W / 2, H * 0.52, '#aaaaff', Math.min(16, H * 0.036));
+    this._neonText(ctx, '(UP TO 3 CHARS, PRESS ENTER)', W / 2, H * 0.61, '#446688', Math.min(12, H * 0.026));
   }
 
   _drawGameOver(ctx) {
