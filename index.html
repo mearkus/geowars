@@ -323,6 +323,7 @@ class AudioManager {
 
   startMusic() {
     if (!this.ctx || this._musicRunning) return;
+    this.resume();
 
     // Master music bus: compressor → gain → destination
     this._musicComp = this.ctx.createDynamicsCompressor();
@@ -340,17 +341,8 @@ class AudioManager {
 
     this._musicRunning = true;
     this._musicStep = 0;
-    this._nextStepTime = 0; // will be set on first tick after resume
-
-    // Resume context (async) then start the scheduler
-    const ready = this.ctx.state === 'running'
-      ? Promise.resolve()
-      : this.ctx.resume();
-    ready.then(() => {
-      if (!this._musicRunning) return;
-      this._nextStepTime = this.ctx.currentTime + 0.05;
-      this._musicTimer = setInterval(() => this._musicTick(), 20);
-    });
+    this._nextStepTime = this.ctx.currentTime + 0.05;
+    this._musicTimer = setInterval(() => this._musicTick(), 20);
   }
 
   stopMusic() {
@@ -364,13 +356,9 @@ class AudioManager {
   }
 
   _musicTick() {
-    if (!this._musicRunning || !this.ctx || this._nextStepTime === 0) return;
+    if (!this._musicRunning || !this.ctx) return;
     const LOOKAHEAD = 0.12;
     const STEP = 60 / 140 / 4; // 16th note at 140 BPM
-    // If we've fallen behind (e.g. tab was hidden), skip ahead cleanly
-    if (this._nextStepTime < this.ctx.currentTime - 0.5) {
-      this._nextStepTime = this.ctx.currentTime + 0.05;
-    }
     while (this._nextStepTime < this.ctx.currentTime + LOOKAHEAD) {
       this._scheduleStep(this._musicStep & 15, this._nextStepTime);
       this._nextStepTime += STEP;
