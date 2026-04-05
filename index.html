@@ -316,6 +316,155 @@ class AudioManager {
       osc.stop(now + noteDur + 0.01);
     });
   }
+
+  // ---------------------------------------------------------------------------
+  // Trance/techno music engine — 140 BPM, A minor pentatonic
+  // ---------------------------------------------------------------------------
+
+  startMusic() {
+    if (!this.ctx || this._musicRunning) return;
+    this.resume();
+
+    // Master music bus: compressor → gain → destination
+    this._musicComp = this.ctx.createDynamicsCompressor();
+    this._musicComp.threshold.value = -18;
+    this._musicComp.knee.value = 6;
+    this._musicComp.ratio.value = 4;
+    this._musicComp.attack.value = 0.003;
+    this._musicComp.release.value = 0.15;
+
+    this._musicBus = this.ctx.createGain();
+    this._musicBus.gain.value = 0.55;
+
+    this._musicComp.connect(this._musicBus);
+    this._musicBus.connect(this.ctx.destination);
+
+    this._musicRunning = true;
+    this._musicStep = 0;
+    this._nextStepTime = this.ctx.currentTime + 0.05;
+    this._musicTimer = setInterval(() => this._musicTick(), 20);
+  }
+
+  stopMusic() {
+    if (!this._musicRunning) return;
+    this._musicRunning = false;
+    clearInterval(this._musicTimer);
+    this._musicTimer = null;
+    if (this._musicBus) {
+      this._musicBus.gain.setTargetAtTime(0, this.ctx.currentTime, 0.1);
+    }
+  }
+
+  _musicTick() {
+    if (!this._musicRunning || !this.ctx) return;
+    const LOOKAHEAD = 0.12;
+    const STEP = 60 / 140 / 4; // 16th note at 140 BPM
+    while (this._nextStepTime < this.ctx.currentTime + LOOKAHEAD) {
+      this._scheduleStep(this._musicStep & 15, this._nextStepTime);
+      this._nextStepTime += STEP;
+      this._musicStep++;
+    }
+  }
+
+  _scheduleStep(step, t) {
+    // Kick: 4-on-the-floor
+    const KICK = [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0];
+    // Closed hi-hat: 8th notes, laid back on off-beats
+    const CHAT = [1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0];
+    // Open hi-hat: off-beats
+    const OHAT = [0,0,0,0, 0,0,1,0, 0,0,0,0, 0,0,1,0];
+    // Bass pattern + notes (A1=55, E2=82, D2=73, G2=98)
+    const BASS_ON   = [1,0,0,1, 0,0,1,0, 1,0,0,0, 0,1,0,0];
+    const BASS_NOTE = [55,0,0,55, 0,0,82,0, 73,0,0,0, 0,98,0,0];
+    // Lead arpeggio: A minor pentatonic (every other 16th)
+    const LEAD_ON   = [1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0];
+    const LEAD_NOTE = [220,0,261.6,0, 329.6,0,392,0, 440,0,392,0, 329.6,0,261.6,0];
+
+    if (KICK[step])              this._mKick(t);
+    if (CHAT[step])              this._mHihat(t, false);
+    if (OHAT[step])              this._mHihat(t, true);
+    if (BASS_ON[step])           this._mBass(t, BASS_NOTE[step]);
+    if (LEAD_ON[step])           this._mLead(t, LEAD_NOTE[step]);
+  }
+
+  _mKick(t) {
+    if (!this._musicComp) return;
+    const osc = this.ctx.createOscillator();
+    const g   = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(160, t);
+    osc.frequency.exponentialRampToValueAtTime(42, t + 0.08);
+    g.gain.setValueAtTime(1.0, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+    osc.connect(g); g.connect(this._musicComp);
+    osc.start(t); osc.stop(t + 0.4);
+  }
+
+  _mHihat(t, open) {
+    if (!this._musicComp) return;
+    const dur    = open ? 0.18 : 0.035;
+    const bufLen = Math.ceil(this.ctx.sampleRate * dur);
+    const buf    = this.ctx.createBuffer(1, bufLen, this.ctx.sampleRate);
+    const data   = buf.getChannelData(0);
+    for (let i = 0; i < bufLen; i++) data[i] = Math.random() * 2 - 1;
+
+    const src    = this.ctx.createBufferSource();
+    src.buffer   = buf;
+    const hpf    = this.ctx.createBiquadFilter();
+    hpf.type     = 'highpass';
+    hpf.frequency.value = 9000;
+    const g      = this.ctx.createGain();
+    g.gain.setValueAtTime(open ? 0.22 : 0.12, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(hpf); hpf.connect(g); g.connect(this._musicComp);
+    src.start(t); src.stop(t + dur + 0.01);
+  }
+
+  _mBass(t, freq) {
+    if (!this._musicComp) return;
+    const STEP = 60 / 140 / 4;
+    const dur  = STEP * 3.2;
+    const osc  = this.ctx.createOscillator();
+    osc.type   = 'sawtooth';
+    osc.frequency.setValueAtTime(freq, t);
+
+    const lpf  = this.ctx.createBiquadFilter();
+    lpf.type   = 'lowpass';
+    lpf.frequency.setValueAtTime(700, t);
+    lpf.frequency.exponentialRampToValueAtTime(180, t + dur);
+    lpf.Q.value = 10;
+
+    const g    = this.ctx.createGain();
+    g.gain.setValueAtTime(0.7, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    osc.connect(lpf); lpf.connect(g); g.connect(this._musicComp);
+    osc.start(t); osc.stop(t + dur + 0.01);
+  }
+
+  _mLead(t, freq) {
+    if (!this._musicComp) return;
+    const STEP = 60 / 140 / 4;
+    const dur  = STEP * 1.7;
+
+    // Two detuned saws for supersaw feel
+    for (const detune of [0, 8]) {
+      const osc  = this.ctx.createOscillator();
+      osc.type   = 'sawtooth';
+      osc.frequency.setValueAtTime(freq, t);
+      osc.detune.setValueAtTime(detune, t);
+
+      const bpf  = this.ctx.createBiquadFilter();
+      bpf.type   = 'bandpass';
+      bpf.frequency.setValueAtTime(freq * 2.5, t);
+      bpf.Q.value = 1.5;
+
+      const g    = this.ctx.createGain();
+      g.gain.setValueAtTime(0.18, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(bpf); bpf.connect(g); g.connect(this._musicComp);
+      osc.start(t); osc.stop(t + dur + 0.01);
+    }
+  }
 }
 
 // =============================================================================
@@ -1731,6 +1880,12 @@ class Game {
       this._showAuthOverlay();
     } else {
       this._hideAuthOverlay();
+    }
+    // Music: play during gameplay, stop otherwise
+    if (s === 'playing') {
+      this.audio.startMusic();
+    } else if (this.state === 'playing') {
+      this.audio.stopMusic();
     }
     this.state = s;
     this.stateTimer = 0;
