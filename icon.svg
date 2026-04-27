@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#000008"/>
+  <!-- Outer hex ring -->
+  <polygon points="256,40 432,146 432,366 256,472 80,366 80,146"
+    fill="none" stroke="#00ffff" stroke-width="6" opacity="0.5"/>
+  <!-- Inner hex ring -->
+  <polygon points="256,90 390,166 390,346 256,422 122,346 122,166"
+    fill="none" stroke="#00ffff" stroke-width="3" opacity="0.3"/>
+  <!-- Player ship (upward-pointing arrow) -->
+  <polygon points="256,130 310,320 256,280 202,320"
+    fill="#00ffff" opacity="0.9"/>
+  <!-- Engine glow -->
+  <ellipse cx="256" cy="310" rx="22" ry="10" fill="#ff44ff" opacity="0.7"/>
+  <!-- Center dot -->
+  <circle cx="256" cy="210" r="8" fill="#ffffff" opacity="0.8"/>
+  <!-- Crosshair lines -->
+  <line x1="256" y1="150" x2="256" y2="175" stroke="#00ffff" stroke-width="2" opacity="0.6"/>
+  <line x1="236" y1="210" x2="211" y2="210" stroke="#00ffff" stroke-width="2" opacity="0.6"/>
+  <line x1="276" y1="210" x2="301" y2="210" stroke="#00ffff" stroke-width="2" opacity="0.6"/>
+</svg>
