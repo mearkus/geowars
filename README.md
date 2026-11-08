@@ -73,6 +73,19 @@ npm run test:all
 
 Pushes to `main` automatically deploy to GitHub Pages via the workflow at `.github/workflows/pages.yml`.
 
+### Supabase keep-alive
+
+Free-tier Supabase projects pause after 7 days without activity. `.github/workflows/supabase-health-check.yml` runs every Monday and Thursday at 09:00 UTC (and on demand via **Actions → Supabase Health Check → Run workflow**), making a one-row read of the public `scores` table.
+
+Set these repository secrets under **Settings → Secrets and variables → Actions → New repository secret**:
+
+| Secret | Value (Supabase dashboard → Project Settings → API) |
+|--------|-----------------------------------------------------|
+| `SUPABASE_URL` | Project URL, e.g. `https://<project-ref>.supabase.co` |
+| `SUPABASE_ANON_KEY` | The `anon` / public API key (never the `service_role` key) |
+
+Optionally add a repository **variable** `SUPABASE_HEALTH_TABLE` to ping a different readable table (defaults to `scores`).
+
 ---
 
 ## Architecture
