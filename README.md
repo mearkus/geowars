@@ -77,7 +77,7 @@ Pushes to `main` automatically deploy to GitHub Pages via the workflow at `.gith
 
 Free-tier Supabase projects pause after 7 days without activity. `.github/workflows/supabase-health-check.yml` runs every Monday and Thursday at 09:00 UTC (and on demand via **Actions → Supabase Health Check → Run workflow**), making a one-row read of the public `scores` table.
 
-Set these repository secrets under **Settings → Secrets and variables → Actions → New repository secret**:
+No setup is needed: by default the workflow reads the project URL and anon key from `index.html`. To point it at a different project, set these repository secrets under **Settings → Secrets and variables → Actions → New repository secret** (they take precedence over `index.html`):
 
 | Secret | Value (Supabase dashboard → Project Settings → API) |
 |--------|-----------------------------------------------------|

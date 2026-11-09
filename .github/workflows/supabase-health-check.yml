@@ -20,17 +20,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       # Publicly readable table (the leaderboard); override with a repo variable if needed
       HEALTH_TABLE: ${{ vars.SUPABASE_HEALTH_TABLE || 'scores' }}
     steps:
-      - name: Check required secrets
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: index.html
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve Supabase credentials
+        env:
+          # Optional: when unset, the public values in index.html are used instead
+          SECRET_URL: ${{ secrets.SUPABASE_URL }}
+          SECRET_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
+          set -euo pipefail
+          SUPABASE_URL="$SECRET_URL"
+          SUPABASE_ANON_KEY="$SECRET_ANON_KEY"
+          if [ -z "$SUPABASE_URL" ]; then
+            SUPABASE_URL=$(sed -nE "s/^const SUPABASE_URL *= *'([^']+)'.*/\1/p" index.html)
+            echo "SUPABASE_URL secret not set; using value from index.html"
+          fi
+          if [ -z "$SUPABASE_ANON_KEY" ]; then
+            SUPABASE_ANON_KEY=$(sed -nE "s/^const SUPABASE_ANON *= *'([^']+)'.*/\1/p" index.html)
+            echo "SUPABASE_ANON_KEY secret not set; using value from index.html"
+          fi
           if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
-            echo "::error::SUPABASE_URL and SUPABASE_ANON_KEY repository secrets must be set."
+            echo "::error::No Supabase URL/key found in secrets or index.html."
             exit 1
           fi
+          echo "::add-mask::$SUPABASE_ANON_KEY"
+          echo "SUPABASE_URL=$SUPABASE_URL" >> "$GITHUB_ENV"
+          echo "SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY" >> "$GITHUB_ENV"
 
       - name: Ping Supabase
         run: |
